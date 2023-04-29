@@ -24,6 +24,7 @@ impl Row {
         let start = cmp::min(start, end);
         let mut result = String::new();
 
+        // Use graphemes instead of chars to handle unicode characters
         for grapheme in self.string[..]
             .graphemes(true)
             .skip(start)

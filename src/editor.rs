@@ -99,6 +99,7 @@ impl Editor {
             (KeyCode::Char(c), KeyModifiers::NONE) => {
                 println!("{}", c);
             }
+            // Handle cursor movement (arrow keys, scroll etc)
             (KeyCode::Up, _)
             | (KeyCode::Down, _)
             | (KeyCode::Left, _)
@@ -143,7 +144,7 @@ impl Editor {
             0
         };
 
-        // Correct cursor position if past end of line
+        // Don't allow cursor to go past the end of the line
         if x > width {
             x = width;
         }
@@ -190,8 +191,10 @@ impl Editor {
                 }
             }
             KeyCode::Right => {
+                // Move one to the right
                 if x < width {
                     x += 1;
+                // Move to the start of the next line if cursor is at the end of the line
                 } else if x == width {
                     y += 1;
                     x = 0;
@@ -205,12 +208,15 @@ impl Editor {
 
     fn draw_welcome_message(&self) {
         let mut welcome_message = format!("Miv editor -- version {}", EDITOR_VERSION);
-        let width = self.terminal.size().width as usize;
         let message_len = welcome_message.len();
+
+        let width = self.terminal.size().width as usize;
         let padding = width.saturating_sub(message_len) / 2;
         let spaces = " ".repeat(padding.saturating_sub(1));
+
         welcome_message = format!("~{}{}", spaces, welcome_message);
         welcome_message.truncate(width);
+
         println!("{}\r", welcome_message);
     }
 

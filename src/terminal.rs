@@ -45,6 +45,7 @@ impl Terminal {
     pub fn set_cursor_position(position: &Position) {
         let Position { mut x, mut y } = position;
 
+        // Make sure we don't go out of bounds
         if x > u16::MAX as usize {
             x = 0;
         }
@@ -79,6 +80,7 @@ impl Terminal {
             match read()? {
                 Key(event) => return Ok(event),
                 _ => (),
+                // TODO: Handle all the other events like mouse, resize, etc
             }
         }
     }
