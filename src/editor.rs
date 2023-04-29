@@ -4,16 +4,13 @@ use crate::Terminal;
 use std::env;
 
 use crossterm::{
-    cursor::{self, Hide, MoveTo},
-    event::{read, Event::Key, KeyCode, KeyEvent, KeyModifiers},
+    cursor,
+    event::{KeyCode, KeyModifiers},
     execute,
-    terminal::{self, Clear, ClearType, ScrollUp, SetTitle},
+    terminal::{self, Clear, ClearType},
 };
 
-use std::{
-    fmt::format,
-    io::{self, stdout, Read, Write},
-};
+use std::io::stdout;
 
 const EDITOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 

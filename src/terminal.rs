@@ -2,12 +2,12 @@ use crate::Position;
 
 use crossterm::{
     cursor::{self, Hide, MoveTo},
-    event::{read, Event::Key, KeyCode, KeyEvent, KeyModifiers},
+    event::{read, Event::Key, KeyEvent},
     execute,
-    terminal::{self, Clear, ClearType, ScrollUp, SetTitle},
+    terminal::{self, Clear, ClearType, SetTitle},
 };
 
-use std::io::{self, stdout, Read, Write};
+use std::io::{self, stdout, Write};
 
 pub struct Size {
     pub width: u16,
