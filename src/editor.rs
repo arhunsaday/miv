@@ -116,17 +116,28 @@ impl Editor {
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let event = Terminal::read_key()?;
 
-        // TODO: write this in termion style
+        // TODO: Write this in termion style
         match (event.code, event.modifiers) {
-            (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
-                terminal::disable_raw_mode().unwrap();
-                self.should_quit = true;
-            }
+            // Ctrl keys
             (KeyCode::Char(c), KeyModifiers::CONTROL) => {
-                println!("Ctrl + {}", c);
+                if c == 'q' {
+                    terminal::disable_raw_mode().unwrap();
+                    self.should_quit = true;
+                }
             }
+            // Normal keys without ctrl
             (KeyCode::Char(c), KeyModifiers::NONE) => {
-                println!("{}", c);
+                self.document.insert(&self.cursor_position, c);
+                self.move_cursor(KeyCode::Right);
+            }
+            (KeyCode::Delete, _) => {
+                self.document.delete(&self.cursor_position);
+            }
+            (KeyCode::Backspace, _) => {
+                if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
+                    self.move_cursor(KeyCode::Left);
+                    self.document.delete(&self.cursor_position);
+                }
             }
             // Handle cursor movement (arrow keys, scroll etc)
             (KeyCode::Up, _)

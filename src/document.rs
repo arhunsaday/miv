@@ -1,9 +1,11 @@
+use crate::Position;
 use crate::Row;
 use std::fs;
 
 #[derive(Default)]
 pub struct Document {
     rows: Vec<Row>,
+    pub file_name: Option<String>,
 }
 
 impl Document {
@@ -15,7 +17,10 @@ impl Document {
             rows.push(Row::from(line));
         }
 
-        Ok(Self { rows })
+        Ok(Self {
+            rows,
+            file_name: Some(file_name.to_string()),
+        })
     }
 
     pub fn row(&self, index: usize) -> Option<&Row> {
@@ -28,5 +33,36 @@ impl Document {
 
     pub fn len(&self) -> usize {
         self.rows.len()
+    }
+
+    pub fn insert(&mut self, at: &Position, c: char) {
+        if at.y == self.len() {
+            let mut new_row = Row::default();
+            new_row.insert(0, c);
+            self.rows.push(new_row);
+        } else if at.y < self.len() {
+            let row = self.rows.get_mut(at.y).unwrap();
+            row.insert(at.x, c);
+        }
+    }
+
+    pub fn delete(&mut self, at: &Position) {
+        let len = self.len();
+
+        // Last line, nothing to delete
+        if at.y >= len {
+            return;
+        }
+
+        // If we're at the end of a line and there's a line after, append them together
+        if at.x == self.rows.get_mut(at.y).unwrap().len() && at.y < len - 1 {
+            let next_row = self.rows.remove(at.y + 1);
+            let row = self.rows.get_mut(at.y).unwrap();
+            row.append(&next_row);
+        } else {
+            // Otherwise, just delete the single character
+            let row = self.rows.get_mut(at.y).unwrap();
+            row.delete(at.x);
+        }
     }
 }
