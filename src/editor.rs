@@ -1,3 +1,4 @@
+use crate::Terminal;
 use crossterm::{
     cursor::{self, Hide, MoveTo},
     event::{read, Event::Key, KeyCode, KeyEvent, KeyModifiers},
@@ -35,22 +36,24 @@ impl Editor {
     }
 
     fn refresh_screen(&self) -> Result<(), std::io::Error> {
-        execute!(
-            stdout(),
-            MoveTo(0, 0),
-            Clear(ClearType::All),
-            SetTitle("Rust Editor"),
-        )?;
+        Terminal::hide_cursor();
+        Terminal::clear_screen();
+        Terminal::set_cursor_position(&Position { x: 0, y: 0 });
+        Terminal::set_title("Miv");
 
         if self.should_quit {
             println!("Goodbye, world.\r")
+        } else {
+            self.draw_rows();
+            Terminal::set_cursor_position(&self.cursor_position);
         }
 
-        io::stdout().flush()
+        Terminal::show_cursor();
+        Terminal::flush()
     }
 
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
-        let event = read_key()?;
+        let event = Terminal::read_key()?;
 
         match (event.code, event.modifiers) {
             (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
