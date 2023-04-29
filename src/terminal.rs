@@ -45,11 +45,15 @@ impl Terminal {
     pub fn set_cursor_position(position: &Position) {
         let Position { mut x, mut y } = position;
 
-        x = x.saturating_add(1);
-        y = y.saturating_add(1);
+        if x > u16::MAX as usize {
+            x = 0;
+        }
+        if y > u16::MAX as usize {
+            y = 0;
+        }
 
-        let x = x.saturating_add(1) as u16;
-        let y = y.saturating_add(1) as u16;
+        let x = x as u16;
+        let y = y as u16;
 
         execute!(stdout(), MoveTo(x, y)).unwrap();
     }
