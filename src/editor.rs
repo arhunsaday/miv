@@ -137,8 +137,9 @@ impl Editor {
     }
 
     fn move_cursor(&mut self, key: KeyCode) {
+        let terminal_window_height = self.terminal.size().height as usize;
         let Position { mut x, mut y } = self.cursor_position;
-        let height = self.document.len();
+        let document_height = self.document.len();
         let mut width = if let Some(row) = self.document.row(y) {
             row.len()
         } else {
@@ -151,22 +152,52 @@ impl Editor {
         }
 
         match key {
-            KeyCode::PageUp => y = 0,
-            KeyCode::PageDown => y = height,
             KeyCode::Home => x = 0,
             KeyCode::End => x = width,
 
-            KeyCode::Up => y = y.saturating_sub(1),
-            KeyCode::Left => x = x.saturating_sub(1),
+            // Scrolling
+            KeyCode::PageUp => {
+                y = if y > terminal_window_height {
+                    y - terminal_window_height
+                } else {
+                    0
+                };
+            }
+            KeyCode::PageDown => {
+                y = if y.saturating_add(terminal_window_height) < document_height {
+                    y + terminal_window_height
+                } else {
+                    document_height
+                };
+            }
 
+            // Arrow key movements
+            KeyCode::Up => y = y.saturating_sub(1),
+            KeyCode::Left => {
+                // Move one to the left
+                if x > 0 {
+                    x -= 1;
+                // Move to the end of the previous line if cursor is at the start of the line
+                } else {
+                    y -= 1;
+                    if let Some(row) = self.document.row(y) {
+                        x = row.len();
+                    } else {
+                        x = 0;
+                    }
+                }
+            }
             KeyCode::Down => {
-                if y < height {
+                if y < document_height {
                     y = y.saturating_add(1);
                 }
             }
             KeyCode::Right => {
                 if x < width {
-                    x = x.saturating_add(1);
+                    x += 1;
+                } else if x == width {
+                    y += 1;
+                    x = 0;
                 }
             }
             _ => (),
