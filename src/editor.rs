@@ -1,6 +1,7 @@
 use crate::Document;
 use crate::Row;
 use crate::Terminal;
+use std::cmp;
 use std::env;
 use std::time::{Duration, Instant};
 
@@ -164,6 +165,7 @@ impl Editor {
             }
             (KeyCode::Enter, _) => {
                 self.document.insert_newline(&self.cursor_position);
+                self.move_cursor(KeyCode::Right);
             }
             (KeyCode::Delete, _) => {
                 self.document.delete(&self.cursor_position);
@@ -271,16 +273,16 @@ impl Editor {
                     y = y.saturating_add(1);
                 }
             }
-            KeyCode::Right => {
-                // Move one to the right
-                if x < width {
-                    x += 1;
-                // Move to the start of the next line if cursor is at the end of the line
-                } else if x == width {
+
+            KeyCode::Right => match x.cmp(&width) {
+                cmp::Ordering::Less => x += 1, // Move one to the right
+                cmp::Ordering::Equal => {
+                    // Move to the start of the next line if cursor is at the end of the line
                     y += 1;
                     x = 0;
                 }
-            }
+                _ => (),
+            },
             _ => (),
         }
 

@@ -66,6 +66,10 @@ impl Document {
     }
 
     pub fn insert_newline(&mut self, at: &Position) {
+        if at.y > self.len() {
+            return;
+        }
+
         // Cursor at the end of the line, just insert a new empty row
         if at.y == self.len() {
             self.rows.push(Row::default());
