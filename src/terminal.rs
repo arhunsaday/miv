@@ -4,6 +4,7 @@ use crossterm::{
     cursor::{self, Hide, MoveTo},
     event::{read, Event::Key, KeyEvent},
     execute,
+    style::{Color, SetBackgroundColor, SetForegroundColor},
     terminal::{self, Clear, ClearType, SetTitle},
 };
 
@@ -25,7 +26,7 @@ impl Terminal {
         Ok(Self {
             size: Size {
                 width: size.0,
-                height: size.1,
+                height: size.1.saturating_sub(2),
             },
         })
     }
@@ -73,6 +74,22 @@ impl Terminal {
 
     pub fn show_cursor() {
         execute!(stdout(), cursor::Show).unwrap();
+    }
+
+    pub fn set_bg_color(color: Color) {
+        execute!(stdout(), SetBackgroundColor(color));
+    }
+
+    pub fn set_fg_color(color: Color) {
+        execute!(stdout(), SetForegroundColor(color));
+    }
+
+    pub fn reset_bg_color() {
+        execute!(stdout(), SetBackgroundColor(Color::Reset));
+    }
+
+    pub fn reset_fg_color() {
+        execute!(stdout(), SetForegroundColor(Color::Reset));
     }
 
     pub fn read_key() -> Result<KeyEvent, std::io::Error> {
