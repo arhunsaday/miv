@@ -286,7 +286,6 @@ impl Editor {
     }
 
     fn draw_status_bar(&self) {
-        let spaces = " ".repeat(self.terminal.size().width as usize);
         let mut status;
 
         let width = self.terminal.size().width as usize;

@@ -35,7 +35,27 @@ impl Document {
         self.rows.len()
     }
 
+    fn insert_newline(&mut self, at: &Position) {
+        if at.y > self.len() {
+            return;
+        }
+
+        // Cursor at the end of the line, just insert a new empty row
+        if at.y == self.len() {
+            self.rows.push(Row::default());
+        }
+
+        // Otherwise split the line at the cursor position and insert a new row containing the right half
+        let new_row = self.rows.get_mut(at.y).unwrap().split(at.x);
+        self.rows.insert(at.y + 1, new_row);
+    }
+
     pub fn insert(&mut self, at: &Position, c: char) {
+        if (c == '\n') {
+            self.insert_newline(at);
+            return;
+        }
+
         if at.y == self.len() {
             let mut new_row = Row::default();
             new_row.insert(0, c);
