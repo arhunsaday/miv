@@ -42,6 +42,10 @@ impl Row {
         result
     }
 
+    pub fn as_bytes(&self) -> &[u8] {
+        self.string.as_bytes()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.string.is_empty()
     }

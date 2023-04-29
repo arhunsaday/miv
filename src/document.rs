@@ -1,11 +1,13 @@
 use crate::Position;
 use crate::Row;
 use std::fs;
+use std::io::{Error, Write};
 
 #[derive(Default)]
 pub struct Document {
-    rows: Vec<Row>,
     pub file_name: Option<String>,
+    rows: Vec<Row>,
+    dirty: bool,
 }
 
 impl Document {
@@ -18,9 +20,33 @@ impl Document {
         }
 
         Ok(Self {
-            rows,
             file_name: Some(file_name.to_string()),
+            rows,
+            dirty: false,
         })
+    }
+
+    pub fn open_non_existent(file_name: &str) -> Self {
+        Self {
+            file_name: Some(file_name.to_string()),
+            rows: Vec::new(),
+            dirty: false,
+        }
+    }
+
+    pub fn save(&mut self) -> Result<(), Error> {
+        if let Some(file_name) = &self.file_name {
+            let mut file = fs::File::create(file_name)?;
+
+            for row in &self.rows {
+                file.write_all(row.as_bytes())?;
+                file.write_all(b"\n")?;
+            }
+
+            self.dirty = false;
+        }
+
+        Ok(())
     }
 
     pub fn row(&self, index: usize) -> Option<&Row> {
@@ -31,15 +57,15 @@ impl Document {
         self.rows.is_empty()
     }
 
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     pub fn len(&self) -> usize {
         self.rows.len()
     }
 
-    fn insert_newline(&mut self, at: &Position) {
-        if at.y > self.len() {
-            return;
-        }
-
+    pub fn insert_newline(&mut self, at: &Position) {
         // Cursor at the end of the line, just insert a new empty row
         if at.y == self.len() {
             self.rows.push(Row::default());
@@ -51,16 +77,17 @@ impl Document {
     }
 
     pub fn insert(&mut self, at: &Position, c: char) {
-        if (c == '\n') {
-            self.insert_newline(at);
+        if at.y > self.len() {
             return;
         }
+
+        self.dirty = true;
 
         if at.y == self.len() {
             let mut new_row = Row::default();
             new_row.insert(0, c);
             self.rows.push(new_row);
-        } else if at.y < self.len() {
+        } else {
             let row = self.rows.get_mut(at.y).unwrap();
             row.insert(at.x, c);
         }
@@ -73,6 +100,8 @@ impl Document {
         if at.y >= len {
             return;
         }
+
+        self.dirty = true;
 
         // If we're at the end of a line and there's a line after, append them together
         if at.x == self.rows.get_mut(at.y).unwrap().len() && at.y < len - 1 {

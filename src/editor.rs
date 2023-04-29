@@ -17,6 +17,7 @@ use std::io::stdout;
 const EDITOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const STATUS_FG_COLOR: Color = Color::Black;
 const STATUS_BG_COLOR: Color = Color::White;
+const QUIT_TIMES: u8 = 2;
 
 #[derive(Default)]
 pub struct Position {
@@ -45,19 +46,20 @@ pub struct Editor {
     cursor_position: Position,
     offset: Position,
     status_message: StatusMessage,
+    quit_times: u8,
 }
 
 impl Editor {
     pub fn default() -> Self {
         let args: Vec<String> = env::args().collect();
-        let mut initial_status = String::from("HELP: Ctrl-Q to quit, Ctrl-S to save.");
+        let mut initial_status = String::from("HELP: Ctrl-Q to quit | Ctrl-S to save.");
 
         let document = if args.len() > 1 {
             match Document::open(&args[1]) {
                 Ok(doc) => doc,
                 Err(e) => {
                     initial_status = format!("ERROR: Could not open file: {e}");
-                    Document::default()
+                    Document::open_non_existent(&args[1])
                 }
             }
         } else {
@@ -71,6 +73,7 @@ impl Editor {
             cursor_position: Position::default(),
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
+            quit_times: QUIT_TIMES,
         }
     }
 
@@ -83,6 +86,7 @@ impl Editor {
             }
 
             if self.should_quit {
+                terminal::disable_raw_mode().unwrap();
                 break;
             }
 
@@ -113,6 +117,24 @@ impl Editor {
         Terminal::flush()
     }
 
+    fn save_file(&mut self) {
+        if self.document.file_name.is_none() {
+            let new_name = self.prompt("Save as: ").unwrap_or(None);
+
+            if new_name.is_none() {
+                self.status_message = StatusMessage::from("INFO: File save aborted.".to_string());
+                return;
+            }
+            self.document.file_name = new_name;
+        }
+
+        if self.document.save().is_ok() {
+            self.status_message = StatusMessage::from("INFO: File saved successfully.".to_string());
+        } else {
+            self.status_message = StatusMessage::from("ERROR: Could not save file!".to_string());
+        }
+    }
+
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let event = Terminal::read_key()?;
 
@@ -121,14 +143,27 @@ impl Editor {
             // Ctrl keys
             (KeyCode::Char(c), KeyModifiers::CONTROL) => {
                 if c == 'q' {
-                    terminal::disable_raw_mode().unwrap();
-                    self.should_quit = true;
+                    if self.quit_times > 0 && self.document.is_dirty() {
+                        self.status_message = StatusMessage::from(format!(
+                            "WARNING: File has unsaved changes. Press Ctrl-Q {} more times to quit.",
+                            self.quit_times
+                        ));
+                        self.quit_times -= 1;
+                        return Ok(());
+                    } else {
+                        self.should_quit = true;
+                    }
+                } else if c == 's' {
+                    self.save_file();
                 }
             }
             // Normal keys without ctrl
             (KeyCode::Char(c), KeyModifiers::NONE) => {
                 self.document.insert(&self.cursor_position, c);
                 self.move_cursor(KeyCode::Right);
+            }
+            (KeyCode::Enter, _) => {
+                self.document.insert_newline(&self.cursor_position);
             }
             (KeyCode::Delete, _) => {
                 self.document.delete(&self.cursor_position);
@@ -152,6 +187,12 @@ impl Editor {
         }
 
         self.scroll();
+
+        if self.quit_times <= QUIT_TIMES {
+            self.quit_times = QUIT_TIMES;
+            self.status_message = StatusMessage::from("".to_string());
+        }
+
         Ok(())
     }
 
@@ -289,6 +330,12 @@ impl Editor {
         let mut status;
 
         let width = self.terminal.size().width as usize;
+        let modified_indicator = if self.document.is_dirty() {
+            "(modified)"
+        } else {
+            ""
+        };
+
         let mut file_name = "[No Name]".to_string();
         if let Some(name) = &self.document.file_name {
             file_name = name.clone();
@@ -296,15 +343,11 @@ impl Editor {
         }
 
         // File name on the left
-        status = format!(
-            "{} - {} lines",
-            file_name,
-            self.document.len().saturating_sub(1)
-        );
+        status = format!("{} {}", file_name, modified_indicator);
 
         // Current line indicator on the right
         let line_indicator = format!(
-            "{}/{}",
+            "Line {}/{}",
             self.cursor_position.y.saturating_add(1),
             self.document.len()
         );
@@ -334,6 +377,39 @@ impl Editor {
             let mut text = message.text.clone();
             text.truncate(self.terminal.size().width as usize);
             print!("{text}");
+        }
+    }
+
+    fn prompt(&mut self, prompt: &str) -> Result<Option<String>, std::io::Error> {
+        let mut result = String::new();
+
+        loop {
+            self.status_message = StatusMessage::from(format!("{}{}", prompt, result));
+            self.refresh_screen()?;
+
+            let event = Terminal::read_key()?;
+
+            match (event.code, event.modifiers) {
+                (KeyCode::Backspace, _) => {
+                    if !result.is_empty() {
+                        result.pop();
+                    }
+                }
+                (KeyCode::Char(c), KeyModifiers::NONE) => {
+                    result.push(c);
+                }
+                (KeyCode::Enter, _) => break,
+                (KeyCode::Esc, _) => break,
+                _ => (),
+            }
+        }
+
+        self.status_message = StatusMessage::from(String::new());
+
+        if result.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(result))
         }
     }
 }
