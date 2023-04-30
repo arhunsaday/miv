@@ -461,7 +461,11 @@ impl Editor {
                         _ => (),
                     }
 
-                    if let Some(position) = editor.document.find(&query, &old_position, direction) {
+                    if let Some(position) =
+                        editor
+                            .document
+                            .find(query, &editor.cursor_position, direction)
+                    {
                         editor.cursor_position = position;
                         editor.scroll();
                     } else if moved {
