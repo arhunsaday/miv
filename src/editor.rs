@@ -20,7 +20,21 @@ const STATUS_FG_COLOR: Color = Color::Black;
 const STATUS_BG_COLOR: Color = Color::White;
 const QUIT_TIMES: u8 = 2;
 
-#[derive(Default)]
+enum Mode {
+    Normal,
+    Insert,
+    Visual,
+    Command,
+    Search,
+}
+
+#[derive(PartialEq, Copy, Clone)]
+pub enum SearchDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Default, Clone)]
 pub struct Position {
     pub x: usize,
     pub y: usize,
@@ -52,7 +66,8 @@ pub struct Editor {
 impl Editor {
     pub fn default() -> Self {
         let args: Vec<String> = env::args().collect();
-        let mut initial_status = String::from("HELP: Ctrl-Q to quit | Ctrl-S to save.");
+        let mut initial_status =
+            String::from("HELP: Ctrl-Q = quit | Ctrl-S = save | Ctrl+f = search");
 
         let document = if args.len() > 1 {
             match Document::open(&args[1]) {
@@ -119,7 +134,7 @@ impl Editor {
 
     fn save_file(&mut self) {
         if self.document.file_name.is_none() {
-            let new_name = self.prompt("Save as: ").unwrap_or(None);
+            let new_name = self.prompt("Save as: ", |_, _, _| {}).unwrap_or(None);
 
             if new_name.is_none() {
                 self.status_message = StatusMessage::from("INFO: File save aborted.".to_string());
@@ -141,24 +156,28 @@ impl Editor {
         // TODO: Write this in termion style
         match (event.code, event.modifiers) {
             // Ctrl keys
-            (KeyCode::Char(c), KeyModifiers::CONTROL) => {
-                // Ctrl+Q
-                if c == 'q' {
+            (KeyCode::Char(c), KeyModifiers::CONTROL) => match c {
+                'q' => {
+                    // TODO: Refactor this
                     if self.quit_times > 0 && self.document.is_dirty() {
                         self.status_message = StatusMessage::from(format!(
-                            "WARNING: File has unsaved changes. Press Ctrl-Q {} more times to quit.",
-                            self.quit_times
-                        ));
+                                "WARNING: File has unsaved changes. Press Ctrl-Q {} more times to quit.",
+                                self.quit_times
+                            ));
                         self.quit_times -= 1;
                         return Ok(());
                     } else {
                         self.should_quit = true;
                     }
-                // Ctrl+S
-                } else if c == 's' {
+                }
+                's' => {
                     self.save_file();
                 }
-            }
+                'f' => {
+                    self.search();
+                }
+                _ => {}
+            },
             // Normal keys without ctrl
             (KeyCode::Char(c), KeyModifiers::NONE) => {
                 self.document.insert(&self.cursor_position, c);
@@ -378,7 +397,10 @@ impl Editor {
         }
     }
 
-    fn prompt(&mut self, prompt: &str) -> Result<Option<String>, std::io::Error> {
+    fn prompt<C>(&mut self, prompt: &str, mut callback: C) -> Result<Option<String>, std::io::Error>
+    where
+        C: FnMut(&mut Self, KeyCode, &String),
+    {
         let mut result = String::new();
 
         loop {
@@ -398,9 +420,14 @@ impl Editor {
                     result.push(c);
                 }
                 (KeyCode::Enter, _) => break,
-                (KeyCode::Esc, _) => break,
+                (KeyCode::Esc, _) => {
+                    result.truncate(0);
+                    break;
+                }
                 _ => (),
             }
+            // TODO: Make variant where callback is optional and not called on every char (for save file for example)
+            callback(self, event.code, &result)
         }
 
         self.status_message = StatusMessage::from(String::new());
@@ -409,6 +436,42 @@ impl Editor {
             Ok(None)
         } else {
             Ok(Some(result))
+        }
+    }
+
+    fn search(&mut self) {
+        let old_position = self.cursor_position.clone();
+        let mut direction = SearchDirection::Forward;
+
+        let query = self
+            .prompt(
+                "Search (ESC to cancel, arrows to navigate): ",
+                |editor, key, query| {
+                    let mut moved = false;
+
+                    match key {
+                        KeyCode::Right | KeyCode::Down => {
+                            direction = SearchDirection::Forward;
+                            editor.move_cursor(KeyCode::Right);
+                            moved = true;
+                        }
+                        KeyCode::Left | KeyCode::Up => direction = SearchDirection::Backward,
+                        _ => (),
+                    }
+
+                    if let Some(position) = editor.document.find(&query, &old_position, direction) {
+                        editor.cursor_position = position;
+                        editor.scroll();
+                    } else if moved {
+                        editor.move_cursor(KeyCode::Left);
+                    }
+                },
+            )
+            .unwrap_or(None);
+
+        if query.is_none() {
+            self.cursor_position = old_position;
+            self.scroll();
         }
     }
 }
