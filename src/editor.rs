@@ -274,7 +274,7 @@ impl Editor {
                     y = y.saturating_add(1);
                 }
             }
-            KeyCode::Left => match x.cmp(&width) {
+            KeyCode::Left => match x.cmp(&0) {
                 cmp::Ordering::Greater => x -= 1, // Move one to the left
                 cmp::Ordering::Equal => {
                     // Move to the end of the previous line if cursor is at the start of the line
@@ -325,7 +325,7 @@ impl Editor {
         let start = self.offset.x;
         let end = self.offset.x.saturating_add(width);
 
-        let row = row.render(start, end);
+        let row = row.get_display_graphemes(start, end);
         println!("{}\r", row)
     }
 
@@ -471,6 +471,8 @@ impl Editor {
                     } else if moved {
                         editor.move_cursor(KeyCode::Left);
                     }
+
+                    editor.document.highlight(Some(query))
                 },
             )
             .unwrap_or(None);
@@ -479,6 +481,7 @@ impl Editor {
             self.cursor_position = old_position;
             self.scroll();
         }
+        self.document.highlight(None);
     }
 }
 

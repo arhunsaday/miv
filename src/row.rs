@@ -1,4 +1,5 @@
-use crate::SearchDirection;
+use crate::{highlighting, SearchDirection};
+use crossterm::style::{Color, SetForegroundColor, Stylize};
 use std::cmp;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -6,6 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct Row {
     string: String,
     len: usize,
+    highlighting: Vec<highlighting::Type>,
 }
 
 impl From<&str> for Row {
@@ -13,29 +15,49 @@ impl From<&str> for Row {
         Self {
             string: String::from(slice),
             len: slice.graphemes(true).count(),
+            highlighting: Vec::new(),
         }
     }
 }
 
 impl Row {
-    pub fn render(&self, start: usize, end: usize) -> String {
+    pub fn get_display_graphemes(&self, start: usize, end: usize) -> String {
         let end = cmp::min(end, self.string.len());
         let start = cmp::min(start, end);
         let mut result = String::new();
+        let mut current_highlighting = &highlighting::Type::None;
 
         // Use graphemes instead of chars to handle unicode characters
-        for grapheme in self.string[..]
+        for (index, grapheme) in self.string[..]
             .graphemes(true)
+            .enumerate()
             .skip(start)
             .take(end - start)
         {
-            // Use spaces instead of tabs for now (configurable later)
-            if grapheme == "\t" {
-                result.push(' ');
-            } else {
-                result.push_str(grapheme);
+            if let Some(c) = grapheme.chars().next() {
+                let highlighting_type = self
+                    .highlighting
+                    .get(index)
+                    .unwrap_or(&highlighting::Type::None);
+
+                if highlighting_type != current_highlighting {
+                    current_highlighting = highlighting_type;
+
+                    let start_highlight = format!("{}", highlighting_type.to_color());
+                    result.push_str(&start_highlight[..]);
+                }
+
+                // Use spaces instead of tabs for now (configurable later)
+                if c == '\t' {
+                    result.push(' ');
+                } else {
+                    result.push(c);
+                }
             }
         }
+
+        let end_highlight = format!("{}", SetForegroundColor(Color::Reset));
+        result.push_str(&end_highlight[..]);
 
         result
     }
@@ -121,11 +143,12 @@ impl Row {
         Self {
             string: splitted_row,
             len: splitted_length,
+            highlighting: Vec::new(),
         }
     }
 
     pub fn find(&self, query: &str, at: usize, direction: SearchDirection) -> Option<usize> {
-        if at > self.len {
+        if at > self.len || query.is_empty() {
             return None;
         }
 
@@ -164,5 +187,46 @@ impl Row {
             }
         }
         None
+    }
+
+    pub fn highlight(&mut self, word: Option<&str>) {
+        let mut highlighting = Vec::new();
+        let chars: Vec<char> = self.string.chars().collect();
+        let mut matches = Vec::new();
+        let mut search_index = 0;
+
+        if let Some(word) = word {
+            while let Some(search_match) = self.find(word, search_index, SearchDirection::Forward) {
+                matches.push(search_match);
+                if let Some(next_index) = search_match.checked_add(word[..].graphemes(true).count())
+                {
+                    search_index = next_index;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let mut index = 0;
+        while let Some(c) = chars.get(index) {
+            if let Some(word) = word {
+                if matches.contains(&index) {
+                    for _ in word[..].graphemes(true) {
+                        index += 1;
+                        highlighting.push(highlighting::Type::Match);
+                    }
+                    continue;
+                }
+            }
+
+            if c.is_ascii_digit() {
+                highlighting.push(highlighting::Type::Number);
+            } else {
+                highlighting.push(highlighting::Type::None);
+            }
+            index += 1;
+        }
+
+        self.highlighting = highlighting;
     }
 }
