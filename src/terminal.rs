@@ -1,7 +1,7 @@
 use crate::Position;
 
 use crossterm::{
-    cursor::{self, Hide, MoveTo},
+    cursor::{self, Hide, MoveTo, SetCursorStyle},
     event::{read, Event::Key, KeyEvent},
     execute,
     style::{Color, SetBackgroundColor, SetForegroundColor},

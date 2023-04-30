@@ -108,7 +108,7 @@ impl Document {
         self.dirty = true;
 
         // If we're at the end of a line and there's a line after, append them together
-        if at.x == self.rows.get_mut(at.y).unwrap().len() && at.y < len - 1 {
+        if at.x == self.rows.get_mut(at.y).unwrap().len() && at.y + 1 < len {
             let next_row = self.rows.remove(at.y + 1);
             let row = self.rows.get_mut(at.y).unwrap();
             row.append(&next_row);

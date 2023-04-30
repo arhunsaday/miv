@@ -39,7 +39,6 @@ impl StatusMessage {
         }
     }
 }
-
 pub struct Editor {
     should_quit: bool,
     terminal: Terminal,
@@ -143,6 +142,7 @@ impl Editor {
         match (event.code, event.modifiers) {
             // Ctrl keys
             (KeyCode::Char(c), KeyModifiers::CONTROL) => {
+                // Ctrl+Q
                 if c == 'q' {
                     if self.quit_times > 0 && self.document.is_dirty() {
                         self.status_message = StatusMessage::from(format!(
@@ -154,6 +154,7 @@ impl Editor {
                     } else {
                         self.should_quit = true;
                     }
+                // Ctrl+S
                 } else if c == 's' {
                     self.save_file();
                 }
@@ -189,11 +190,6 @@ impl Editor {
         }
 
         self.scroll();
-
-        if self.quit_times <= QUIT_TIMES {
-            self.quit_times = QUIT_TIMES;
-            self.status_message = StatusMessage::from("".to_string());
-        }
 
         Ok(())
     }
@@ -239,14 +235,14 @@ impl Editor {
             // Scrolling
             KeyCode::PageUp => {
                 y = if y > terminal_window_height {
-                    y - terminal_window_height
+                    y.saturating_sub(terminal_window_height)
                 } else {
                     0
                 };
             }
             KeyCode::PageDown => {
                 y = if y.saturating_add(terminal_window_height) < document_height {
-                    y + terminal_window_height
+                    y.saturating_add(terminal_window_height)
                 } else {
                     document_height
                 };
@@ -306,7 +302,7 @@ impl Editor {
     fn draw_row(&self, row: &Row) {
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
-        let end = self.offset.x + width;
+        let end = self.offset.x.saturating_add(width);
 
         let row = row.render(start, end);
         println!("{}\r", row)
@@ -357,7 +353,7 @@ impl Editor {
         let len = status.len() + line_indicator.len();
 
         if width > len {
-            status.push_str(&" ".repeat(width - len));
+            status.push_str(&" ".repeat(width.saturating_sub(len)));
         }
 
         status = format!("{}{}", status, line_indicator);
@@ -393,6 +389,7 @@ impl Editor {
 
             match (event.code, event.modifiers) {
                 (KeyCode::Backspace, _) => {
+                    result.truncate(result.len().saturating_sub(1));
                     if !result.is_empty() {
                         result.pop();
                     }
