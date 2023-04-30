@@ -269,32 +269,34 @@ impl Editor {
 
             // Arrow key movements
             KeyCode::Up => y = y.saturating_sub(1),
-            KeyCode::Left => {
-                // Move one to the left
-                if x > 0 {
-                    x -= 1;
-                // Move to the end of the previous line if cursor is at the start of the line
-                } else {
-                    y -= 1;
-                    if let Some(row) = self.document.row(y) {
-                        x = row.len();
-                    } else {
-                        x = 0;
-                    }
-                }
-            }
             KeyCode::Down => {
                 if y < document_height {
                     y = y.saturating_add(1);
                 }
             }
-
+            KeyCode::Left => match x.cmp(&width) {
+                cmp::Ordering::Greater => x -= 1, // Move one to the left
+                cmp::Ordering::Equal => {
+                    // Move to the end of the previous line if cursor is at the start of the line
+                    if y > 0 {
+                        y -= 1;
+                        if let Some(row) = self.document.row(y) {
+                            x = row.len();
+                        } else {
+                            x = 0;
+                        }
+                    }
+                }
+                _ => (),
+            },
             KeyCode::Right => match x.cmp(&width) {
                 cmp::Ordering::Less => x += 1, // Move one to the right
                 cmp::Ordering::Equal => {
                     // Move to the start of the next line if cursor is at the end of the line
-                    y += 1;
-                    x = 0;
+                    if y < document_height {
+                        y += 1;
+                        x = 0;
+                    }
                 }
                 _ => (),
             },
