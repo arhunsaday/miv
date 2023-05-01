@@ -1,5 +1,6 @@
 mod document;
 mod editor;
+mod filetype;
 mod highlighting;
 mod row;
 mod terminal;
@@ -7,6 +8,7 @@ mod terminal;
 pub use document::Document;
 use editor::Editor;
 pub use editor::{Position, SearchDirection};
+pub use filetype::{FileType, HighlightOptions};
 pub use row::Row;
 pub use terminal::Terminal;
 

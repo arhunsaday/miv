@@ -366,7 +366,8 @@ impl Editor {
 
         // Current line indicator on the right
         let line_indicator = format!(
-            "Line {}/{}",
+            "Filetype: {} | Line {}/{}",
+            self.document.file_type(),
             self.cursor_position.y.saturating_add(1),
             self.document.len()
         );
