@@ -1,8 +1,12 @@
 #[derive(PartialEq)]
 pub enum Type {
     None,
-    Number,
     Match,
+    Number,
+    String,
+    Character,
+    Comment,
+    MultilineComment,
 }
 
 pub enum Color {
@@ -28,9 +32,13 @@ pub enum Color {
 impl Type {
     pub fn to_color(&self) -> String {
         match self {
-            Type::Number => String::from("\x1b[31m"),
-            // Type::Match => String::from("\x1b[7m\x1b[32m"),
+            // TODO: Use crossterm for this or deobfuscate the ANSI codes
             Type::Match => String::from("\x1b[7m\x1b[33m"),
+            Type::Number => String::from("\x1b[31m"),
+            Type::String => String::from("\x1b[32m"),
+            Type::Character => String::from("\x1b[33m"),
+            Type::Comment => String::from("\x1b[34m"),
+            Type::MultilineComment => String::from("\x1b[35m"),
             _ => String::from("\x1b[0m"),
         }
     }
