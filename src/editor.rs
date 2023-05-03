@@ -116,9 +116,7 @@ impl Editor {
         Terminal::set_cursor_position(&Position::default());
         Terminal::set_title("Miv");
 
-        if self.should_quit {
-            println!("Goodbye, world.\r")
-        } else {
+        if (!self.should_quit) {
             self.draw_rows();
             self.draw_status_bar();
             self.draw_message_bar();
