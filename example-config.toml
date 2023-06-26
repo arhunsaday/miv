@@ -1,0 +1,11 @@
+[editor]
+indent_size = 2
+tab_size = 2
+line_numbers = "relative"
+
+[appearance]
+theme = "base16-ocean.dark"
+
+[general]
+debug = false
+log_level = "info"

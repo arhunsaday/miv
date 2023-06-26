@@ -1,7 +1,4 @@
-use crate::Document;
-use crate::Highlighting;
-use crate::Row;
-use crate::Terminal;
+use crate::{Document, Highlighting, Row, Settings, Terminal};
 use crossterm::{
     cursor,
     event::{KeyCode, KeyModifiers},
@@ -13,9 +10,7 @@ use std::cmp;
 use std::env;
 use std::io::stdout;
 use std::time::{Duration, Instant};
-use syntect::easy::HighlightLines;
-use syntect::highlighting::Style;
-use syntect::util::as_24_bit_terminal_escaped;
+use syntect::{easy::HighlightLines, highlighting::Style, util::as_24_bit_terminal_escaped};
 
 const EDITOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const STATUS_FG_COLOR: Color = Color::Black;
@@ -66,10 +61,11 @@ pub struct Editor {
     quit_times: u8,
     mode: Mode,
     highlighting: Highlighting,
+    config: Settings,
 }
 
-impl Default for Editor {
-    fn default() -> Self {
+impl Editor {
+    pub fn new(config: Settings) -> Self {
         let args: Vec<String> = env::args().collect();
         let mut initial_status =
             String::from("HELP: Ctrl-Q = quit | Ctrl-S = save | Ctrl+f = search");
@@ -96,11 +92,10 @@ impl Default for Editor {
             quit_times: QUIT_TIMES,
             mode: Mode::Normal,
             highlighting: Highlighting::default(),
+            config,
         }
     }
-}
 
-impl Editor {
     pub fn run(&mut self) {
         terminal::enable_raw_mode().unwrap();
 
