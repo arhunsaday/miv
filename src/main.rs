@@ -8,7 +8,8 @@ mod terminal;
 pub use document::Document;
 pub use editor::Editor;
 pub use editor::{Position, SearchDirection};
-pub use filetype::{FileType, HighlightOptions};
+pub use filetype::FileType;
+pub use highlighting::Highlighting;
 pub use row::Row;
 pub use terminal::Terminal;
 

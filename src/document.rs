@@ -20,10 +20,7 @@ impl Document {
         let file_type = FileType::from(file_name);
 
         for line in file_contents.lines() {
-            let mut row = Row::from(line);
-
-            row.highlight(file_type.highlight_options(), None);
-            rows.push(row);
+            rows.push(Row::from(line));
         }
 
         Ok(Self {
@@ -52,7 +49,6 @@ impl Document {
             for row in &mut self.rows {
                 file.write_all(row.as_bytes())?;
                 file.write_all(b"\n")?;
-                row.highlight(self.file_type.highlight_options(), None);
             }
 
             self.dirty = false;
@@ -93,10 +89,7 @@ impl Document {
 
         // Otherwise split the line at the cursor position and insert a new row containing the right half
         let current_row = self.rows.get_mut(at.y).unwrap();
-        let mut new_row = current_row.split(at.x);
-
-        current_row.highlight(self.file_type.highlight_options(), None);
-        new_row.highlight(self.file_type.highlight_options(), None);
+        let new_row = current_row.split(at.x);
 
         self.rows.insert(at.y + 1, new_row);
     }
@@ -111,12 +104,10 @@ impl Document {
         if at.y == self.rows.len() {
             let mut new_row = Row::default();
             new_row.insert(0, c);
-            new_row.highlight(self.file_type.highlight_options(), None);
             self.rows.push(new_row);
         } else {
             let row = self.rows.get_mut(at.y).unwrap();
             row.insert(at.x, c);
-            row.highlight(self.file_type.highlight_options(), None);
         }
     }
 
@@ -135,12 +126,10 @@ impl Document {
             let next_row = self.rows.remove(at.y + 1);
             let row = self.rows.get_mut(at.y).unwrap();
             row.append(&next_row);
-            row.highlight(self.file_type.highlight_options(), None);
         } else {
             // Otherwise, just delete the single character
             let row = self.rows.get_mut(at.y).unwrap();
             row.delete(at.x);
-            row.highlight(self.file_type.highlight_options(), None);
         }
     }
 
@@ -182,11 +171,5 @@ impl Document {
             }
         }
         None
-    }
-
-    pub fn highlight(&mut self, word: Option<&str>) {
-        for row in &mut self.rows {
-            row.highlight(self.file_type.highlight_options(), word);
-        }
     }
 }

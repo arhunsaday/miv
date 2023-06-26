@@ -1,10 +1,7 @@
 use crate::Document;
+use crate::Highlighting;
 use crate::Row;
 use crate::Terminal;
-use std::cmp;
-use std::env;
-use std::time::{Duration, Instant};
-
 use crossterm::{
     cursor,
     event::{KeyCode, KeyModifiers},
@@ -12,8 +9,13 @@ use crossterm::{
     style::Color,
     terminal::{self, Clear, ClearType},
 };
-
+use std::cmp;
+use std::env;
 use std::io::stdout;
+use std::time::{Duration, Instant};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::Style;
+use syntect::util::as_24_bit_terminal_escaped;
 
 const EDITOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const STATUS_FG_COLOR: Color = Color::Black;
@@ -62,6 +64,8 @@ pub struct Editor {
     offset: Position,
     status_message: StatusMessage,
     quit_times: u8,
+    mode: Mode,
+    highlighting: Highlighting,
 }
 
 impl Default for Editor {
@@ -90,6 +94,8 @@ impl Default for Editor {
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
             quit_times: QUIT_TIMES,
+            mode: Mode::Normal,
+            highlighting: Highlighting::default(),
         }
     }
 }
@@ -329,14 +335,26 @@ impl Editor {
     }
 
     fn draw_row(&self, row: &Row, line_number: u16) {
+        // TODO: Add line numbers
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
         let end = self.offset.x.saturating_add(width);
-
         let row = row.get_display_graphemes(start, end);
-        println!("{}\r", row)
-        // TODO: Add line numbers
-        // println!("{line_number}{row}\r");
+
+        let syntax = self
+            .highlighting
+            .syntax_set
+            .find_syntax_by_extension("rs")
+            .unwrap();
+
+        let mut h = HighlightLines::new(
+            syntax,
+            &self.highlighting.theme_set.themes["base16-ocean.dark"],
+        );
+
+        let ranges: Vec<(Style, &str)> = h.highlight(&row, &self.highlighting.syntax_set);
+        let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+        println!("{escaped}\r");
     }
 
     fn draw_rows(&self) {
@@ -483,7 +501,7 @@ impl Editor {
                         editor.move_cursor(KeyCode::Left);
                     }
 
-                    editor.document.highlight(Some(query))
+                    // editor.document.highlight(Some(query))
                 },
             )
             .unwrap_or(None);
@@ -492,7 +510,7 @@ impl Editor {
             self.cursor_position = old_position;
             self.scroll();
         }
-        self.document.highlight(None);
+        // self.document.highlight(None);
     }
 }
 
