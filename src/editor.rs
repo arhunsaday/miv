@@ -205,6 +205,9 @@ impl Editor {
                     self.document.delete(&self.cursor_position);
                 }
             }
+            (KeyCode::Esc, _) => {
+                self.switch_mode();
+            }
             // Handle cursor movement (arrow keys, scroll etc)
             (KeyCode::Up, _)
             | (KeyCode::Down, _)
@@ -331,6 +334,7 @@ impl Editor {
 
     fn draw_row(&self, row: &Row, line_number: u16) {
         // TODO: Add line numbers
+        // TODO: Cache the syntax highlighting
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
         let end = self.offset.x.saturating_add(width);
@@ -506,6 +510,20 @@ impl Editor {
             self.scroll();
         }
         // self.document.highlight(None);
+    }
+
+    fn switch_mode(&mut self) {
+        self.mode = match self.mode {
+            Mode::Normal => {
+                Terminal::set_bar_cursor();
+                Mode::Insert
+            }
+            Mode::Insert => {
+                Terminal::set_block_cursor();
+                Mode::Normal
+            }
+            _ => Mode::Normal,
+        }
     }
 }
 

@@ -31,14 +31,27 @@ impl Terminal {
         })
     }
 
+    pub fn read_key() -> Result<KeyEvent, std::io::Error> {
+        loop {
+            match read()? {
+                Key(event) => return Ok(event),
+                _ => (),
+                // TODO: Handle all the other events like mouse, resize, etc
+            }
+        }
+    }
+
     pub fn size(&self) -> &Size {
         &self.size
+    }
+
+    pub fn set_title(title: &str) {
+        execute!(stdout(), SetTitle(title)).unwrap();
     }
 
     pub fn clear_screen() {
         execute!(stdout(), Clear(ClearType::All)).unwrap();
     }
-
     pub fn clear_current_line() {
         execute!(stdout(), Clear(ClearType::CurrentLine)).unwrap();
     }
@@ -59,19 +72,15 @@ impl Terminal {
 
         execute!(stdout(), MoveTo(x, y)).unwrap();
     }
-
-    pub fn flush() -> Result<(), std::io::Error> {
-        io::stdout().flush()
+    pub fn set_block_cursor() {
+        execute!(stdout(), SetCursorStyle::BlinkingBlock).unwrap();
     }
-
-    pub fn set_title(title: &str) {
-        execute!(stdout(), SetTitle(title)).unwrap();
+    pub fn set_bar_cursor() {
+        execute!(stdout(), SetCursorStyle::BlinkingBar).unwrap();
     }
-
     pub fn hide_cursor() {
         execute!(stdout(), Hide).unwrap();
     }
-
     pub fn show_cursor() {
         execute!(stdout(), cursor::Show).unwrap();
     }
@@ -79,26 +88,17 @@ impl Terminal {
     pub fn set_bg_color(color: Color) {
         execute!(stdout(), SetBackgroundColor(color));
     }
-
     pub fn set_fg_color(color: Color) {
         execute!(stdout(), SetForegroundColor(color));
     }
-
     pub fn reset_bg_color() {
         execute!(stdout(), SetBackgroundColor(Color::Reset));
     }
-
     pub fn reset_fg_color() {
         execute!(stdout(), SetForegroundColor(Color::Reset));
     }
 
-    pub fn read_key() -> Result<KeyEvent, std::io::Error> {
-        loop {
-            match read()? {
-                Key(event) => return Ok(event),
-                _ => (),
-                // TODO: Handle all the other events like mouse, resize, etc
-            }
-        }
+    pub fn flush() -> Result<(), std::io::Error> {
+        io::stdout().flush()
     }
 }

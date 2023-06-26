@@ -24,6 +24,18 @@ impl FileType {
             "toml" => "TOML",
             "md" => "Markdown",
             "txt" => "Plain text",
+            "c" => "C",
+            "cpp" => "C++",
+            "h" => "C header",
+            "hpp" => "C++ header",
+            "py" => "Python",
+            "js" => "JavaScript",
+            "html" => "HTML",
+            "css" => "CSS",
+            "json" => "JSON",
+            "sh" => "Shell script",
+            "go" => "Go",
+            "java" => "Java",
             _ => "Unknown or no file type",
         };
 
