@@ -53,6 +53,7 @@ impl StatusMessage {
         }
     }
 }
+
 pub struct Editor {
     should_quit: bool,
     terminal: Terminal,
@@ -63,8 +64,8 @@ pub struct Editor {
     quit_times: u8,
 }
 
-impl Editor {
-    pub fn default() -> Self {
+impl Default for Editor {
+    fn default() -> Self {
         let args: Vec<String> = env::args().collect();
         let mut initial_status =
             String::from("HELP: Ctrl-Q = quit | Ctrl-S = save | Ctrl+f = search");
@@ -91,7 +92,9 @@ impl Editor {
             quit_times: QUIT_TIMES,
         }
     }
+}
 
+impl Editor {
     pub fn run(&mut self) {
         terminal::enable_raw_mode().unwrap();
 
@@ -114,9 +117,16 @@ impl Editor {
     fn refresh_screen(&self) -> Result<(), std::io::Error> {
         Terminal::hide_cursor();
         Terminal::set_cursor_position(&Position::default());
-        Terminal::set_title("Miv");
+        Terminal::set_title(&format!(
+            "{} -- Miv {}",
+            self.document
+                .file_name
+                .clone()
+                .unwrap_or(String::from("[No Name]")),
+            EDITOR_VERSION,
+        ));
 
-        if (!self.should_quit) {
+        if !self.should_quit {
             self.draw_rows();
             self.draw_status_bar();
             self.draw_message_bar();
@@ -318,13 +328,15 @@ impl Editor {
         println!("{}\r", welcome_message);
     }
 
-    fn draw_row(&self, row: &Row) {
+    fn draw_row(&self, row: &Row, line_number: u16) {
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
         let end = self.offset.x.saturating_add(width);
 
         let row = row.get_display_graphemes(start, end);
         println!("{}\r", row)
+        // TODO: Add line numbers
+        // println!("{line_number}{row}\r");
     }
 
     fn draw_rows(&self) {
@@ -334,7 +346,7 @@ impl Editor {
             Terminal::clear_current_line();
 
             if let Some(row) = self.document.row(terminal_row as usize + self.offset.y) {
-                self.draw_row(row);
+                self.draw_row(row, terminal_row);
             } else if self.document.is_empty() && terminal_row == height / 3 {
                 self.draw_welcome_message();
             } else {

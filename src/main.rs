@@ -6,7 +6,7 @@ mod row;
 mod terminal;
 
 pub use document::Document;
-use editor::Editor;
+pub use editor::Editor;
 pub use editor::{Position, SearchDirection};
 pub use filetype::{FileType, HighlightOptions};
 pub use row::Row;
