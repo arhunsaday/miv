@@ -6,6 +6,7 @@ use crossterm::{
     execute,
     style::{Color, SetBackgroundColor, SetForegroundColor},
     terminal::{self, Clear, ClearType, SetTitle},
+    Command,
 };
 
 use std::io::{self, stdout, Write};
@@ -20,7 +21,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn default() -> Result<Self, std::io::Error> {
+    pub fn new() -> Result<Self, std::io::Error> {
         let size = terminal::size()?;
 
         Ok(Self {
@@ -35,8 +36,7 @@ impl Terminal {
         loop {
             match read()? {
                 Key(event) => return Ok(event),
-                _ => (),
-                // TODO: Handle all the other events like mouse, resize, etc
+                _ => continue,
             }
         }
     }
@@ -46,14 +46,14 @@ impl Terminal {
     }
 
     pub fn set_title(title: &str) {
-        execute!(stdout(), SetTitle(title)).unwrap();
+        execute(SetTitle(title));
     }
 
     pub fn clear_screen() {
-        execute!(stdout(), Clear(ClearType::All)).unwrap();
+        execute(Clear(ClearType::All));
     }
     pub fn clear_current_line() {
-        execute!(stdout(), Clear(ClearType::CurrentLine)).unwrap();
+        execute(Clear(ClearType::CurrentLine));
     }
 
     pub fn set_cursor_position(position: &Position) {
@@ -70,35 +70,39 @@ impl Terminal {
         let x = x as u16;
         let y = y as u16;
 
-        execute!(stdout(), MoveTo(x, y)).unwrap();
+        execute(MoveTo(x, y));
     }
     pub fn set_block_cursor() {
-        execute!(stdout(), SetCursorStyle::BlinkingBlock).unwrap();
+        execute(SetCursorStyle::BlinkingBlock);
     }
     pub fn set_bar_cursor() {
-        execute!(stdout(), SetCursorStyle::BlinkingBar).unwrap();
+        execute(SetCursorStyle::BlinkingBar);
     }
     pub fn hide_cursor() {
-        execute!(stdout(), Hide).unwrap();
+        execute(Hide);
     }
     pub fn show_cursor() {
-        execute!(stdout(), cursor::Show).unwrap();
+        execute(cursor::Show);
     }
 
     pub fn set_bg_color(color: Color) {
-        execute!(stdout(), SetBackgroundColor(color));
+        execute(SetBackgroundColor(color));
     }
     pub fn set_fg_color(color: Color) {
-        execute!(stdout(), SetForegroundColor(color));
+        execute(SetForegroundColor(color));
     }
     pub fn reset_bg_color() {
-        execute!(stdout(), SetBackgroundColor(Color::Reset));
+        execute(SetBackgroundColor(Color::Reset));
     }
     pub fn reset_fg_color() {
-        execute!(stdout(), SetForegroundColor(Color::Reset));
+        execute(SetForegroundColor(Color::Reset));
     }
 
     pub fn flush() -> Result<(), std::io::Error> {
         io::stdout().flush()
     }
+}
+
+pub fn execute<C: Command>(command: C) {
+    execute!(stdout(), command).unwrap();
 }
