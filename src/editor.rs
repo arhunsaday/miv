@@ -6,10 +6,10 @@ use crossterm::{
     style::Color,
     terminal::{self, Clear, ClearType},
 };
-use std::cmp;
 use std::env;
 use std::io::stdout;
 use std::time::{Duration, Instant};
+use std::{cmp, fmt::Display};
 use syntect::{easy::HighlightLines, highlighting::Style, util::as_24_bit_terminal_escaped};
 
 const EDITOR_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -23,6 +23,19 @@ enum Mode {
     Visual,
     Command,
     Search,
+}
+
+impl Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mode = match self {
+            Mode::Normal => "Normal",
+            Mode::Insert => "Insert",
+            Mode::Visual => "Visual",
+            Mode::Command => "Command",
+            Mode::Search => "Search",
+        };
+        write!(f, "{}", mode)
+    }
 }
 
 #[derive(PartialEq, Copy, Clone)]
@@ -84,13 +97,13 @@ impl Editor {
 
         Self {
             should_quit: false,
-            terminal: Terminal::default().expect("Failed to initialize terminal"),
+            terminal: Terminal::new().expect("Failed to initialize terminal"),
             document,
             cursor_position: Position::default(),
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
             quit_times: QUIT_TIMES,
-            mode: Mode::Normal,
+            mode: Mode::Insert,
             highlighting: Highlighting::default(),
             config,
         }
@@ -99,6 +112,7 @@ impl Editor {
     pub fn run(&mut self) {
         terminal::enable_raw_mode().unwrap();
 
+        // Main loop of the editor
         loop {
             if let Err(e) = self.refresh_screen() {
                 die(e);
@@ -205,8 +219,14 @@ impl Editor {
                     self.document.delete(&self.cursor_position);
                 }
             }
+            (KeyCode::Tab, _) => {
+                for _ in 0..self.config.editor.tab_size {
+                    self.document.insert(&self.cursor_position, ' ');
+                    self.move_cursor(KeyCode::Right);
+                }
+            }
             (KeyCode::Esc, _) => {
-                self.switch_mode();
+                self.switch_mode(Mode::Normal);
             }
             // Handle cursor movement (arrow keys, scroll etc)
             (KeyCode::Up, _)
@@ -389,7 +409,7 @@ impl Editor {
         }
 
         // File name on the left
-        status = format!("{} {}", file_name, modified_indicator);
+        status = format!("{} {} [{}]", file_name, modified_indicator, self.mode);
 
         // Current line indicator on the right
         let line_indicator = format!(
@@ -512,15 +532,15 @@ impl Editor {
         // self.document.highlight(None);
     }
 
-    fn switch_mode(&mut self) {
-        self.mode = match self.mode {
+    fn switch_mode(&mut self, new_mode: Mode) {
+        self.mode = match new_mode {
             Mode::Normal => {
-                Terminal::set_bar_cursor();
-                Mode::Insert
-            }
-            Mode::Insert => {
                 Terminal::set_block_cursor();
                 Mode::Normal
+            }
+            Mode::Insert => {
+                Terminal::set_bar_cursor();
+                Mode::Insert
             }
             _ => Mode::Normal,
         }

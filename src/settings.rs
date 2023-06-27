@@ -5,21 +5,21 @@ use std::env;
 
 #[derive(Debug, Deserialize)]
 #[allow(unused)]
-struct EditorConfig {
-    indent_size: u8,
-    tab_size: u8,
-    line_numbers: String,
+pub struct EditorConfig {
+    pub indent_size: u8,
+    pub tab_size: u8,
+    pub line_numbers: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(unused)]
-struct AppearanceConfig {
+pub struct AppearanceConfig {
     theme: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(unused)]
-struct GeneralConfig {
+pub struct GeneralConfig {
     debug: bool,
     log_level: String,
 }
@@ -27,9 +27,9 @@ struct GeneralConfig {
 #[derive(Debug, Deserialize)]
 #[allow(unused)]
 pub struct Settings {
-    editor: EditorConfig,
-    appearance: AppearanceConfig,
-    general: GeneralConfig,
+    pub editor: EditorConfig,
+    pub appearance: AppearanceConfig,
+    pub general: GeneralConfig,
 }
 
 impl Settings {
