@@ -22,6 +22,7 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new() -> Result<Self, std::io::Error> {
+        Terminal::set_blinking_block_cursor();
         let size = terminal::size()?;
 
         Ok(Self {
@@ -71,6 +72,9 @@ impl Terminal {
         let y = y as u16;
 
         execute(MoveTo(x, y));
+    }
+    pub fn set_blinking_block_cursor() {
+        execute(SetCursorStyle::BlinkingBlock);
     }
     pub fn set_block_cursor() {
         execute(SetCursorStyle::BlinkingBlock);

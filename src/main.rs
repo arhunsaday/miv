@@ -21,10 +21,9 @@ use std::fs::File;
 
 fn main() {
     init_logging();
-    info!("Starting miv");
+    info!("Starting Miv");
 
-    let settings = Settings::new();
-    Editor::new(settings).run();
+    Editor::new(Settings::new()).run();
 }
 
 fn init_logging() {

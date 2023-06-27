@@ -17,12 +17,33 @@ const STATUS_FG_COLOR: Color = Color::Black;
 const STATUS_BG_COLOR: Color = Color::White;
 const QUIT_TIMES: u8 = 2;
 
+#[derive(Default)]
 enum Mode {
+    #[default]
     Normal,
     Insert,
     Visual,
     Command,
     Search,
+}
+
+enum Command {
+    Save,
+    Quit,
+}
+
+enum Direction {
+    Forward,
+    Backward,
+    Down,
+    Up,
+}
+
+enum Action {
+    Move,
+    Delete,
+    Yank,
+    Change,
 }
 
 impl Display for Mode {
@@ -103,7 +124,7 @@ impl Editor {
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
             quit_times: QUIT_TIMES,
-            mode: Mode::Insert,
+            mode: Mode::default(),
             highlighting: Highlighting::default(),
             config,
         }
@@ -173,15 +194,100 @@ impl Editor {
         }
     }
 
+    // TODO: Refactor this
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let event = Terminal::read_key()?;
 
-        // TODO: Write this in termion style
+        match self.mode {
+            // Normal mode keybindings
+            Mode::Normal => match (event.code, event.modifiers) {
+                (KeyCode::Char(c), KeyModifiers::NONE) => match c {
+                    'h' => {
+                        self.move_cursor(KeyCode::Left);
+                    }
+                    'j' => {
+                        self.move_cursor(KeyCode::Down);
+                    }
+                    'k' => {
+                        self.move_cursor(KeyCode::Up);
+                    }
+                    'l' => {
+                        self.move_cursor(KeyCode::Right);
+                    }
+                    '0' => {
+                        self.move_cursor(KeyCode::Home);
+                    }
+                    '$' => {
+                        self.move_cursor(KeyCode::End);
+                    }
+                    'w' => {
+                        // self.move_cursor_word();
+                    }
+                    'b' => {
+                        // self.move_cursor_word_back();
+                    }
+                    'a' => {
+                        self.switch_mode(Mode::Insert);
+                    }
+                    'i' => {
+                        self.move_cursor(KeyCode::Left);
+                        self.switch_mode(Mode::Insert);
+                    }
+                    'o' => {
+                        self.move_cursor(KeyCode::Down);
+                        self.switch_mode(Mode::Insert);
+                        self.document.insert_newline(&self.cursor_position);
+                    }
+                    _ => {}
+                },
+                (KeyCode::Char(c), KeyModifiers::CONTROL) => match c {
+                    'd' => {
+                        self.move_cursor(KeyCode::PageDown);
+                    }
+                    'u' => {
+                        self.move_cursor(KeyCode::PageUp);
+                    }
+                    _ => {}
+                },
+                _ => {}
+            },
+            // Insert mode keybindings
+            Mode::Insert => match (event.code, event.modifiers) {
+                (KeyCode::Esc, _) => {
+                    self.switch_mode(Mode::Normal);
+                }
+                (KeyCode::Char(c), KeyModifiers::NONE) => {
+                    self.document.insert(&self.cursor_position, c);
+                    self.move_cursor(KeyCode::Right);
+                }
+                (KeyCode::Enter, _) => {
+                    self.document.insert_newline(&self.cursor_position);
+                    self.move_cursor(KeyCode::Right);
+                }
+                (KeyCode::Delete, _) => {
+                    self.document.delete(&self.cursor_position);
+                }
+                (KeyCode::Backspace, _) => {
+                    if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
+                        self.move_cursor(KeyCode::Left);
+                        self.document.delete(&self.cursor_position);
+                    }
+                }
+                (KeyCode::Tab, _) => {
+                    for _ in 0..self.config.editor.tab_size {
+                        self.document.insert(&self.cursor_position, ' ');
+                        self.move_cursor(KeyCode::Right);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+
+        // Keys that work in both modes
         match (event.code, event.modifiers) {
-            // Ctrl keys
             (KeyCode::Char(c), KeyModifiers::CONTROL) => match c {
                 'q' => {
-                    // TODO: Refactor this
                     if self.quit_times > 0 && self.document.is_dirty() {
                         self.status_message = StatusMessage::from(format!(
                                 "WARNING: File has unsaved changes. Press Ctrl-Q {} more times to quit.",
@@ -201,34 +307,6 @@ impl Editor {
                 }
                 _ => {}
             },
-            // Normal keys without ctrl
-            (KeyCode::Char(c), KeyModifiers::NONE) => {
-                self.document.insert(&self.cursor_position, c);
-                self.move_cursor(KeyCode::Right);
-            }
-            (KeyCode::Enter, _) => {
-                self.document.insert_newline(&self.cursor_position);
-                self.move_cursor(KeyCode::Right);
-            }
-            (KeyCode::Delete, _) => {
-                self.document.delete(&self.cursor_position);
-            }
-            (KeyCode::Backspace, _) => {
-                if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
-                    self.move_cursor(KeyCode::Left);
-                    self.document.delete(&self.cursor_position);
-                }
-            }
-            (KeyCode::Tab, _) => {
-                for _ in 0..self.config.editor.tab_size {
-                    self.document.insert(&self.cursor_position, ' ');
-                    self.move_cursor(KeyCode::Right);
-                }
-            }
-            (KeyCode::Esc, _) => {
-                self.switch_mode(Mode::Normal);
-            }
-            // Handle cursor movement (arrow keys, scroll etc)
             (KeyCode::Up, _)
             | (KeyCode::Down, _)
             | (KeyCode::Left, _)
@@ -241,7 +319,6 @@ impl Editor {
         }
 
         self.scroll();
-
         Ok(())
     }
 
@@ -535,12 +612,16 @@ impl Editor {
     fn switch_mode(&mut self, new_mode: Mode) {
         self.mode = match new_mode {
             Mode::Normal => {
-                Terminal::set_block_cursor();
+                Terminal::set_blinking_block_cursor();
                 Mode::Normal
             }
             Mode::Insert => {
                 Terminal::set_bar_cursor();
                 Mode::Insert
+            }
+            Mode::Visual => {
+                Terminal::set_block_cursor();
+                Mode::Visual
             }
             _ => Mode::Normal,
         }
