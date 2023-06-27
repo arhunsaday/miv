@@ -14,7 +14,7 @@ use syntect::{easy::HighlightLines, highlighting::Style, util::as_24_bit_termina
 
 const EDITOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const STATUS_FG_COLOR: Color = Color::Black;
-const STATUS_BG_COLOR: Color = Color::White;
+const STATUS_BG_COLOR: Color = Color::Grey;
 const QUIT_TIMES: u8 = 2;
 
 #[derive(Default)]
@@ -154,7 +154,7 @@ impl Editor {
         Terminal::hide_cursor();
         Terminal::set_cursor_position(&Position::default());
         Terminal::set_title(&format!(
-            "{} -- Miv {}",
+            "{} — Miv {}",
             self.document
                 .file_name
                 .clone()
