@@ -14,7 +14,7 @@ pub struct EditorConfig {
 #[derive(Debug, Deserialize)]
 #[allow(unused)]
 pub struct AppearanceConfig {
-    theme: String,
+    pub theme: String,
 }
 
 #[derive(Debug, Deserialize)]

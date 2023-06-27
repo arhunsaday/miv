@@ -445,11 +445,11 @@ impl Editor {
 
         let mut h = HighlightLines::new(
             syntax,
-            &self.highlighting.theme_set.themes["base16-ocean.dark"],
+            &self.highlighting.theme_set.themes[&self.config.appearance.theme],
         );
 
         let ranges: Vec<(Style, &str)> = h.highlight(&row, &self.highlighting.syntax_set);
-        let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+        let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
         println!("{escaped}\r");
     }
 
