@@ -238,6 +238,9 @@ impl Editor {
                         self.switch_mode(Mode::Insert);
                         self.document.insert_newline(&self.cursor_position);
                     }
+                    ':' => {
+                        self.command_mode();
+                    }
                     _ => {}
                 },
                 (KeyCode::Char(c), KeyModifiers::CONTROL) => match c {
@@ -307,7 +310,7 @@ impl Editor {
                     self.save_file();
                 }
                 'f' => {
-                    self.search();
+                    self.search_mode();
                 }
                 _ => {}
             },
@@ -570,7 +573,34 @@ impl Editor {
         }
     }
 
-    fn search(&mut self) {
+    fn command_mode(&mut self) {
+        let old_position = self.cursor_position.clone();
+
+        let query = self
+            .prompt("Command: ", |editor, key, query| {})
+            .unwrap_or(None);
+
+        match query {
+            Some(command) => match command.as_str() {
+                "q" | "quit" => {
+                    self.should_quit = true;
+                }
+                "w" | "save" => {
+                    self.save_file();
+                }
+                _ => {
+                    self.status_message =
+                        StatusMessage::from("Not an editor command: ".to_string() + &command)
+                }
+            },
+            None => {
+                self.cursor_position = old_position;
+                self.scroll();
+            }
+        }
+    }
+
+    fn search_mode(&mut self) {
         let old_position = self.cursor_position.clone();
         let mut direction = SearchDirection::Forward;
 
