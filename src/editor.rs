@@ -260,6 +260,10 @@ impl Editor {
                     self.document.insert(&self.cursor_position, c);
                     self.move_cursor(KeyCode::Right);
                 }
+                (KeyCode::Char(c), KeyModifiers::SHIFT) => {
+                    self.document.insert(&self.cursor_position, c);
+                    self.move_cursor(KeyCode::Right);
+                }
                 (KeyCode::Enter, _) => {
                     self.document.insert_newline(&self.cursor_position);
                     self.move_cursor(KeyCode::Right);
