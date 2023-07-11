@@ -1,13 +1,11 @@
 pub struct FileType {
     name: String,
-    extension: String,
 }
 
 impl Default for FileType {
     fn default() -> Self {
         Self {
             name: String::from("Unknown or no file type"),
-            extension: String::from(""),
         }
     }
 }
@@ -41,7 +39,6 @@ impl FileType {
 
         Self {
             name: String::from(name),
-            extension: String::from(extension),
         }
     }
 }
