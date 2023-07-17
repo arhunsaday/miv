@@ -22,7 +22,7 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new() -> Result<Self, std::io::Error> {
-        Terminal::set_blinking_block_cursor();
+        Terminal::change_defaults();
         let size = terminal::size()?;
 
         Ok(Self {
@@ -31,6 +31,18 @@ impl Terminal {
                 height: size.1.saturating_sub(2),
             },
         })
+    }
+
+    pub fn change_defaults() {
+        Terminal::set_cursor(SetCursorStyle::BlinkingBlock);
+        terminal::enable_raw_mode().unwrap();
+        execute(EnableMouseCapture);
+    }
+
+    pub fn restore_defaults() {
+        Terminal::show_cursor();
+        terminal::disable_raw_mode().unwrap();
+        execute(DisableMouseCapture);
     }
 
     pub fn read_key() -> Result<KeyEvent, std::io::Error> {

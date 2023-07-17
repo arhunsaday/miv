@@ -140,7 +140,7 @@ impl Editor {
             }
 
             if self.should_quit {
-                terminal::disable_raw_mode().unwrap();
+                Terminal::restore_defaults();
                 break;
             }
 
