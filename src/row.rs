@@ -19,11 +19,9 @@ impl From<&str> for Row {
 impl Row {
     pub fn get_display_graphemes(&self, start: usize, end: usize) -> String {
         let mut result = String::new();
-        let mut length = 0;
 
         for (index, grapheme) in self.string[..].graphemes(true).enumerate() {
             if index >= start && index < end {
-                length += 1;
                 result.push_str(grapheme);
             }
         }

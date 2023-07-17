@@ -1,18 +1,22 @@
+mod command;
 mod document;
 mod editor;
 mod filetype;
 mod highlighting;
+mod keymaps;
 mod mode;
+mod position;
 mod row;
 mod settings;
 mod terminal;
 
 pub use document::Document;
 pub use editor::Editor;
-pub use editor::{Position, SearchDirection};
+pub use editor::SearchDirection;
 pub use filetype::FileType;
 pub use highlighting::Highlighting;
 pub use mode::{Mode, PossibleModes};
+pub use position::Position;
 pub use row::Row;
 pub use settings::Settings;
 pub use terminal::Terminal;

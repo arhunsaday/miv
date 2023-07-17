@@ -1,74 +1,24 @@
-use crate::{Document, Highlighting, Row, Settings, Terminal};
+use crate::{Document, Highlighting, Mode, Position, PossibleModes, Row, Settings, Terminal};
 use crossterm::{
     cursor,
     event::{KeyCode, KeyModifiers},
     execute,
-    style::Color,
-    terminal::{self, Clear, ClearType},
+    style::Stylize,
+    terminal::{Clear, ClearType},
 };
+use std::cmp;
 use std::env;
 use std::io::stdout;
 use std::time::{Duration, Instant};
-use std::{cmp, fmt::Display};
 use syntect::{easy::HighlightLines, highlighting::Style, util::as_24_bit_terminal_escaped};
 
 const EDITOR_VERSION: &str = env!("CARGO_PKG_VERSION");
-const STATUS_FG_COLOR: Color = Color::Black;
-const STATUS_BG_COLOR: Color = Color::Grey;
 const QUIT_TIMES: u8 = 2;
-
-#[derive(Default)]
-enum Mode {
-    #[default]
-    Normal,
-    Insert,
-    Visual,
-    Command,
-    Search,
-}
-
-enum Command {
-    Save,
-    Quit,
-}
-
-enum Direction {
-    Forward,
-    Backward,
-    Down,
-    Up,
-}
-
-enum Action {
-    Move,
-    Delete,
-    Yank,
-    Change,
-}
-
-impl Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mode = match self {
-            Mode::Normal => "Normal",
-            Mode::Insert => "Insert",
-            Mode::Visual => "Visual",
-            Mode::Command => "Command",
-            Mode::Search => "Search",
-        };
-        write!(f, "{}", mode)
-    }
-}
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum SearchDirection {
     Forward,
     Backward,
-}
-
-#[derive(Default, Clone)]
-pub struct Position {
-    pub x: usize,
-    pub y: usize,
 }
 
 struct StatusMessage {
@@ -131,7 +81,14 @@ impl Editor {
     }
 
     pub fn run(&mut self) {
-        terminal::enable_raw_mode().unwrap();
+        Terminal::set_title(&format!(
+            "{} — Miv {}",
+            self.document
+                .file_name
+                .clone()
+                .unwrap_or(String::from("[No Name]")),
+            EDITOR_VERSION,
+        ));
 
         // Main loop of the editor
         loop {
@@ -153,16 +110,9 @@ impl Editor {
     fn refresh_screen(&self) -> Result<(), std::io::Error> {
         Terminal::hide_cursor();
         Terminal::set_cursor_position(&Position::default());
-        Terminal::set_title(&format!(
-            "{} — Miv {}",
-            self.document
-                .file_name
-                .clone()
-                .unwrap_or(String::from("[No Name]")),
-            EDITOR_VERSION,
-        ));
 
         if !self.should_quit {
+            // TODO: Don't rerender rows if they haven't changed
             self.draw_rows();
             self.draw_status_bar();
             self.draw_message_bar();
@@ -181,14 +131,14 @@ impl Editor {
             let new_name = self.prompt("Save as: ", |_, _, _| {}).unwrap_or(None);
 
             if new_name.is_none() {
-                self.status_message = StatusMessage::from("INFO: File save aborted.".to_string());
+                self.status_message = StatusMessage::from("File save aborted.".to_string());
                 return;
             }
             self.document.file_name = new_name;
         }
 
         if self.document.save().is_ok() {
-            self.status_message = StatusMessage::from("INFO: File saved successfully.".to_string());
+            self.status_message = StatusMessage::from("File saved successfully.".to_string());
         } else {
             self.status_message = StatusMessage::from("ERROR: Could not save file!".to_string());
         }
@@ -197,10 +147,9 @@ impl Editor {
     // TODO: Refactor this
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let event = Terminal::read_key()?;
-
-        match self.mode {
+        match self.mode.current_mode {
             // Normal mode keybindings
-            Mode::Normal => match (event.code, event.modifiers) {
+            PossibleModes::Normal => match (event.code, event.modifiers) {
                 (KeyCode::Char(c), KeyModifiers::NONE) => match c {
                     'h' => {
                         self.move_cursor(KeyCode::Left);
@@ -221,27 +170,32 @@ impl Editor {
                         self.move_cursor(KeyCode::End);
                     }
                     'w' => {
-                        // self.move_cursor_word();
+                        self.move_cursor_word();
                     }
                     'b' => {
                         // self.move_cursor_word_back();
                     }
                     'a' => {
-                        self.switch_mode(Mode::Insert);
+                        self.move_cursor(KeyCode::Right);
+                        self.mode.switch(PossibleModes::Insert);
                     }
                     'i' => {
-                        self.move_cursor(KeyCode::Left);
-                        self.switch_mode(Mode::Insert);
+                        self.mode.switch(PossibleModes::Insert);
+                    }
+                    'v' => {
+                        self.mode.switch(PossibleModes::Visual);
                     }
                     'o' => {
                         self.move_cursor(KeyCode::Down);
-                        self.switch_mode(Mode::Insert);
+                        self.mode.switch(PossibleModes::Insert);
                         self.document.insert_newline(&self.cursor_position);
                     }
                     ':' => {
                         self.command_mode();
                     }
-                    _ => {}
+                    _ => {
+                        self.mode.switch(PossibleModes::OperatorPending);
+                    }
                 },
                 (KeyCode::Char(c), KeyModifiers::CONTROL) => match c {
                     'd' => {
@@ -255,9 +209,10 @@ impl Editor {
                 _ => {}
             },
             // Insert mode keybindings
-            Mode::Insert => match (event.code, event.modifiers) {
+            PossibleModes::Insert => match (event.code, event.modifiers) {
                 (KeyCode::Esc, _) => {
-                    self.switch_mode(Mode::Normal);
+                    self.mode.switch(PossibleModes::Normal);
+                    self.move_cursor(KeyCode::Left);
                 }
                 (KeyCode::Char(c), KeyModifiers::NONE) => {
                     self.document.insert(&self.cursor_position, c);
@@ -285,6 +240,20 @@ impl Editor {
                         self.document.insert(&self.cursor_position, ' ');
                         self.move_cursor(KeyCode::Right);
                     }
+                }
+                _ => {}
+            },
+            // Visual mode keybindings
+            PossibleModes::Visual => match (event.code, event.modifiers) {
+                (KeyCode::Esc, _) => {
+                    self.mode.switch(PossibleModes::Normal);
+                }
+                _ => {}
+            },
+            // Operator pending mode keybindings
+            PossibleModes::OperatorPending => match (event.code, event.modifiers) {
+                (KeyCode::Esc, _) => {
+                    self.mode.switch(PossibleModes::Normal);
                 }
                 _ => {}
             },
@@ -422,6 +391,8 @@ impl Editor {
         self.cursor_position = Position { x, y };
     }
 
+    fn move_cursor_word(&mut self) {}
+
     fn draw_welcome_message(&self) {
         let mut welcome_message = format!("Miv editor -- version {}", EDITOR_VERSION);
         let message_len = welcome_message.len();
@@ -444,6 +415,7 @@ impl Editor {
         let end = self.offset.x.saturating_add(width);
         let row = row.get_display_graphemes(start, end);
 
+        // TODO: cache the syntax highlighting
         let syntax = self
             .highlighting
             .syntax_set
@@ -477,9 +449,8 @@ impl Editor {
     }
 
     fn draw_status_bar(&self) {
-        let mut status;
-
         let width = self.terminal.size().width as usize;
+
         let modified_indicator = if self.document.is_dirty() {
             "(modified)"
         } else {
@@ -492,31 +463,32 @@ impl Editor {
             file_name.truncate(width);
         }
 
-        // File name on the left
-        status = format!("{} {} [{}]", file_name, modified_indicator, self.mode);
+        let app_name = " Miv ";
+        let left_info = format!(
+            " {} {} [{}]",
+            file_name, modified_indicator, self.mode.current_mode
+        );
 
-        // Current line indicator on the right
-        let line_indicator = format!(
+        let left_content = format!("{}{}", app_name, left_info);
+        let right_content = format!(
             "Filetype: {} | Line {}/{}",
             self.document.file_type(),
             self.cursor_position.y.saturating_add(1),
             self.document.len()
         );
 
-        let len = status.len() + line_indicator.len();
+        let len = left_content.len() + right_content.len();
+        let empty_space: String = " ".repeat(width.saturating_sub(len));
+        let status_bar_content = format!("{}{}{}", left_info, empty_space, right_content);
 
-        if width > len {
-            status.push_str(&" ".repeat(width.saturating_sub(len)));
-        }
-
-        status = format!("{}{}", status, line_indicator);
-        status.truncate(width);
-
-        Terminal::set_bg_color(STATUS_BG_COLOR);
-        Terminal::set_fg_color(STATUS_FG_COLOR);
-        println!("{status}\r");
-        Terminal::reset_bg_color();
-        Terminal::reset_fg_color();
+        println!(
+            "{}{}\r",
+            app_name
+                .bold()
+                .white()
+                .on(self.mode.current_mode.to_color()),
+            status_bar_content.black().on_grey()
+        );
     }
 
     fn draw_message_bar(&self) {
@@ -575,10 +547,7 @@ impl Editor {
 
     fn command_mode(&mut self) {
         let old_position = self.cursor_position.clone();
-
-        let query = self
-            .prompt("Command: ", |editor, key, query| {})
-            .unwrap_or(None);
+        let query = self.prompt(":", |editor, key, query| {}).unwrap_or(None);
 
         match query {
             Some(command) => match command.as_str() {
@@ -642,29 +611,10 @@ impl Editor {
         }
         // self.document.highlight(None);
     }
-
-    fn switch_mode(&mut self, new_mode: Mode) {
-        self.mode = match new_mode {
-            Mode::Normal => {
-                Terminal::set_blinking_block_cursor();
-                Mode::Normal
-            }
-            Mode::Insert => {
-                Terminal::set_bar_cursor();
-                Mode::Insert
-            }
-            Mode::Visual => {
-                Terminal::set_block_cursor();
-                Mode::Visual
-            }
-            _ => Mode::Normal,
-        }
-    }
 }
 
 fn die(e: std::io::Error) {
     println!("{}", e);
     execute!(stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0),).unwrap();
-
     panic!("Panic");
 }
