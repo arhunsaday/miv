@@ -8,7 +8,9 @@ mod mode;
 mod position;
 mod row;
 mod settings;
+mod statusbar;
 mod terminal;
+mod utils;
 
 pub use document::Document;
 pub use editor::Editor;
