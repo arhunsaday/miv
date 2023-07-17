@@ -10,6 +10,7 @@ pub enum PossibleModes {
     Visual,
     Command,
     Search,
+    OperatorPending,
 }
 
 #[derive(Default)]
@@ -25,6 +26,8 @@ impl Display for PossibleModes {
             PossibleModes::Visual => "Visual",
             PossibleModes::Command => "Command",
             PossibleModes::Search => "Search",
+            // TODO: Implement operator and motion pending modes
+            PossibleModes::OperatorPending => "Operator pending",
         };
         write!(f, "{}", mode)
     }
@@ -38,6 +41,7 @@ impl PossibleModes {
             PossibleModes::Visual => Color::Green,
             PossibleModes::Command => Color::Magenta,
             PossibleModes::Search => Color::Yellow,
+            PossibleModes::OperatorPending => Color::Cyan,
         }
     }
 }
@@ -56,6 +60,10 @@ impl Mode {
             PossibleModes::Visual => {
                 Terminal::set_cursor(SetCursorStyle::SteadyBlock);
                 PossibleModes::Visual
+            }
+            PossibleModes::OperatorPending => {
+                Terminal::set_cursor(SetCursorStyle::SteadyUnderScore);
+                PossibleModes::OperatorPending
             }
             _ => PossibleModes::Normal,
         }
