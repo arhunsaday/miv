@@ -1,14 +1,15 @@
 use crate::Position;
-
 use crossterm::{
-    cursor::{self, Hide, MoveTo, SetCursorStyle},
-    event::{read, Event::Key, KeyEvent},
+    cursor::{self, MoveTo, SetCursorStyle},
+    event::{
+        read, DisableMouseCapture, EnableMouseCapture,
+        Event::{Key, Mouse},
+        KeyEvent, MouseEventKind,
+    },
     execute,
-    style::{Color, SetBackgroundColor, SetForegroundColor},
     terminal::{self, Clear, ClearType, SetTitle},
     Command,
 };
-
 use std::io::{self, stdout, Write};
 
 pub struct Size {
@@ -49,6 +50,21 @@ impl Terminal {
         loop {
             match read()? {
                 Key(event) => return Ok(event),
+                Mouse(event) => match event.kind {
+                    MouseEventKind::ScrollDown => {}
+                    MouseEventKind::ScrollUp => {}
+                    MouseEventKind::Down(key) => match key {
+                        crossterm::event::MouseButton::Left => {
+                            Terminal::set_cursor_position(&Position {
+                                x: event.column as usize,
+                                y: event.row as usize,
+                            });
+                        }
+                        crossterm::event::MouseButton::Right => {}
+                        crossterm::event::MouseButton::Middle => {}
+                    },
+                    _ => {}
+                },
                 _ => continue,
             }
         }
@@ -85,33 +101,15 @@ impl Terminal {
 
         execute(MoveTo(x, y));
     }
-    pub fn set_blinking_block_cursor() {
-        execute(SetCursorStyle::BlinkingBlock);
-    }
-    pub fn set_block_cursor() {
-        execute(SetCursorStyle::BlinkingBlock);
-    }
-    pub fn set_bar_cursor() {
-        execute(SetCursorStyle::BlinkingBar);
-    }
-    pub fn hide_cursor() {
-        execute(Hide);
+
+    pub fn set_cursor(cursor: SetCursorStyle) {
+        execute(cursor);
     }
     pub fn show_cursor() {
         execute(cursor::Show);
     }
-
-    pub fn set_bg_color(color: Color) {
-        execute(SetBackgroundColor(color));
-    }
-    pub fn set_fg_color(color: Color) {
-        execute(SetForegroundColor(color));
-    }
-    pub fn reset_bg_color() {
-        execute(SetBackgroundColor(Color::Reset));
-    }
-    pub fn reset_fg_color() {
-        execute(SetForegroundColor(Color::Reset));
+    pub fn hide_cursor() {
+        execute(cursor::Hide);
     }
 
     pub fn flush() -> Result<(), std::io::Error> {
