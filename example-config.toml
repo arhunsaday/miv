@@ -1,11 +1,48 @@
+# miv configuration.
+#
+# Copy to $XDG_CONFIG_HOME/miv/config.toml, or ~/.config/miv/config.toml.
+# Every key is optional; the values below are the defaults. Unknown keys are
+# reported as errors rather than ignored, so a typo tells you about itself.
+#
+# Anything here can also be changed at runtime with :set (see :help).
+
 [editor]
-indent_size = 2
-tab_size = 2
+# Screen columns a tab character occupies.
+tab_width = 4
+
+# Insert spaces instead of a tab character.
+expand_tab = true
+
+# Columns shifted by >> and <<.
+shift_width = 4
+
+# Lines kept visible above and below the cursor.
+scrolloff = 3
+
+# "none" | "absolute" | "relative" | "hybrid"
+# hybrid shows relative numbers except on the cursor line.
 line_numbers = "relative"
 
+# Highlight the line the cursor is on.
+cursorline = true
+
+# Case-insensitive search...
+ignore_case = true
+
+# ...unless the pattern contains an uppercase character.
+smart_case = true
+
+# Wrap around the end of the file when searching.
+wrap_search = true
+
 [appearance]
+# Any syntect theme; run `miv --list-themes` to see them all.
 theme = "base16-ocean.dark"
 
-[general]
-debug = false
-log_level = "info"
+syntax_highlighting = true
+
+# Stop highlighting files longer than this, to keep editing responsive.
+max_highlight_lines = 50000
+
+# Paint the theme's background colour instead of leaving your terminal's.
+theme_background = false
