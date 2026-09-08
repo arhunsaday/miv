@@ -1,71 +1,60 @@
-use crate::Terminal;
-use crossterm::{cursor::SetCursorStyle, style::Color};
-use std::fmt::Display;
+//! Editor modes and their presentation.
 
-#[derive(Default)]
-pub enum PossibleModes {
+use ratatui::style::Color;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisualKind {
+    Char,
+    Line,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
     #[default]
     Normal,
     Insert,
-    Visual,
+    /// `R`: typing overwrites instead of inserting.
+    Replace,
+    Visual(VisualKind),
+    /// The `:` prompt.
     Command,
+    /// The `/` or `?` prompt.
     Search,
-    OperatorPending,
-}
-
-#[derive(Default)]
-pub struct Mode {
-    pub current_mode: PossibleModes,
-}
-
-impl Display for PossibleModes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mode = match self {
-            PossibleModes::Normal => "Normal",
-            PossibleModes::Insert => "Insert",
-            PossibleModes::Visual => "Visual",
-            PossibleModes::Command => "Command",
-            PossibleModes::Search => "Search",
-            // TODO: Implement operator and motion pending modes
-            PossibleModes::OperatorPending => "Operator pending",
-        };
-        write!(f, "{}", mode)
-    }
-}
-
-impl PossibleModes {
-    pub fn to_color(&self) -> Color {
-        match self {
-            PossibleModes::Normal => Color::Blue,
-            PossibleModes::Insert => Color::Red,
-            PossibleModes::Visual => Color::Green,
-            PossibleModes::Command => Color::Magenta,
-            PossibleModes::Search => Color::Yellow,
-            PossibleModes::OperatorPending => Color::Cyan,
-        }
-    }
 }
 
 impl Mode {
-    pub fn switch(&mut self, new_mode: PossibleModes) {
-        self.current_mode = match new_mode {
-            PossibleModes::Normal => {
-                Terminal::set_cursor(SetCursorStyle::BlinkingBlock);
-                PossibleModes::Normal
-            }
-            PossibleModes::Insert => {
-                Terminal::set_cursor(SetCursorStyle::BlinkingBar);
-                PossibleModes::Insert
-            }
-            PossibleModes::Visual => {
-                Terminal::set_cursor(SetCursorStyle::SteadyBlock);
-                PossibleModes::Visual
-            }
-            PossibleModes::OperatorPending => {
-                Terminal::set_cursor(SetCursorStyle::SteadyUnderScore);
-                PossibleModes::OperatorPending
-            }
-            _ => PossibleModes::Normal,
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Normal => "NORMAL",
+            Mode::Insert => "INSERT",
+            Mode::Replace => "REPLACE",
+            Mode::Visual(VisualKind::Char) => "VISUAL",
+            Mode::Visual(VisualKind::Line) => "V-LINE",
+            Mode::Command => "COMMAND",
+            Mode::Search => "SEARCH",
         }
+    }
+
+    pub fn color(self) -> Color {
+        match self {
+            Mode::Normal => Color::Blue,
+            Mode::Insert => Color::Green,
+            Mode::Replace => Color::Red,
+            Mode::Visual(_) => Color::Magenta,
+            Mode::Command | Mode::Search => Color::Yellow,
+        }
+    }
+
+    /// Whether the cursor may rest one column past the last character.
+    pub fn allows_eol(self) -> bool {
+        matches!(self, Mode::Insert | Mode::Replace | Mode::Visual(_))
+    }
+
+    pub fn is_visual(self) -> bool {
+        matches!(self, Mode::Visual(_))
+    }
+
+    pub fn is_prompt(self) -> bool {
+        matches!(self, Mode::Command | Mode::Search)
     }
 }
