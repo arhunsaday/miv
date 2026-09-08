@@ -27,6 +27,7 @@ pub enum MessageKind {
     Error,
 }
 
+#[derive(Clone)]
 pub struct Message {
     pub text: String,
     pub kind: MessageKind,
@@ -46,6 +47,7 @@ pub enum PromptKind {
     SearchBackward,
 }
 
+#[derive(Clone)]
 pub struct Prompt {
     pub kind: PromptKind,
     pub input: String,
