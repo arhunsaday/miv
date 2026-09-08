@@ -48,6 +48,10 @@ pub struct Buffer {
     pub syntax_cache: SyntaxCache,
     /// Named a file that does not exist yet.
     pub is_new_file: bool,
+    /// Splices applied since the last drain. A shared session uses these to
+    /// move every other participant's cursor along with the text, so their
+    /// caret stays on the character it was pointing at.
+    pub edits: Vec<Change>,
 }
 
 impl Buffer {
@@ -69,6 +73,7 @@ impl Buffer {
             syntax_name: "Plain Text".to_string(),
             syntax_cache: SyntaxCache::default(),
             is_new_file: false,
+            edits: Vec::new(),
         }
     }
 
@@ -141,6 +146,11 @@ impl Buffer {
         self.path.is_none() && self.rope.len_chars() <= 1 && !self.is_modified()
     }
 
+    /// Take the splices recorded since the last call.
+    pub fn drain_edits(&mut self) -> Vec<Change> {
+        std::mem::take(&mut self.edits)
+    }
+
     pub fn slice(&self, from: usize, to: usize) -> String {
         let end = to.min(self.rope.len_chars());
         let start = from.min(end);
@@ -165,6 +175,11 @@ impl Buffer {
         });
         let line = self.rope.char_to_line(at);
         self.rope.insert(at, content);
+        self.edits.push(Change {
+            at,
+            removed: String::new(),
+            inserted: content.to_string(),
+        });
         self.syntax_cache.invalidate_from(line);
         self.history.commit(self.cursor);
     }
@@ -184,6 +199,11 @@ impl Buffer {
         });
         let line = self.rope.char_to_line(start);
         self.rope.remove(start..end);
+        self.edits.push(Change {
+            at: start,
+            removed: removed.clone(),
+            inserted: String::new(),
+        });
         self.ensure_trailing_newline();
         self.syntax_cache.invalidate_from(line);
         self.history.commit(self.cursor);
@@ -224,6 +244,7 @@ impl Buffer {
         if !change.inserted.is_empty() {
             self.rope.insert(change.at, &change.inserted);
         }
+        self.edits.push(change.clone());
         self.ensure_trailing_newline();
         self.syntax_cache.invalidate_from(line);
     }

@@ -43,7 +43,7 @@ pub enum Awaiting {
     InsertRegister,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Pending {
     pub count: Option<usize>,
     pub register: Option<char>,
