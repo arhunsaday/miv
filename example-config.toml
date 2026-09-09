@@ -1,11 +1,77 @@
+# miv configuration.
+#
+# Copy to $XDG_CONFIG_HOME/miv/config.toml, or ~/.config/miv/config.toml.
+# Every key is optional; the values below are the defaults. Unknown keys are
+# reported as errors rather than ignored, so a typo tells you about itself.
+#
+# Anything here can also be changed at runtime with :set (see :help).
+
 [editor]
-indent_size = 2
-tab_size = 2
+# Screen columns a tab character occupies.
+tab_width = 4
+
+# Insert spaces instead of a tab character.
+expand_tab = true
+
+# Columns shifted by >> and <<.
+shift_width = 4
+
+# Lines kept visible above and below the cursor.
+scrolloff = 3
+
+# "none" | "absolute" | "relative" | "hybrid"
+# hybrid shows relative numbers except on the cursor line.
 line_numbers = "relative"
 
+# Highlight the line the cursor is on.
+cursorline = true
+
+# Case-insensitive search...
+ignore_case = true
+
+# ...unless the pattern contains an uppercase character.
+smart_case = true
+
+# Wrap around the end of the file when searching.
+wrap_search = true
+
 [appearance]
+# Any syntect theme; run `miv --list-themes` to see them all.
 theme = "base16-ocean.dark"
 
-[general]
-debug = false
-log_level = "info"
+syntax_highlighting = true
+
+# Stop highlighting files longer than this, to keep editing responsive.
+max_highlight_lines = 50000
+
+# Paint the theme's background colour instead of leaving your terminal's.
+theme_background = false
+
+# Shared editing sessions (:share). Everything here is off until you run
+# :share — miv never opens a listener on its own.
+[session]
+# Interface the listener binds to. Loopback by default: reaching a session
+# from another machine should be deliberate — an SSH tunnel, or a VPN address
+# you set here on purpose.
+bind = "127.0.0.1"
+
+# 0 picks a free port, which is usually what you want. :share --port overrides.
+port = 0
+
+# The name other participants see. Defaults to $USER.
+# name = "arhun"
+
+# What someone can do the moment they connect: "read" or "write".
+default_access = "read"
+
+# Announce joins, leaves and access changes in the message line.
+announce = true
+
+max_participants = 8
+
+# Draw other participants' carets, selections and name tags in your view.
+show_remote_cursors = true
+
+# Let guests run `:` commands. Deliberately separate from write access:
+# editing text is a much smaller grant than `:w /some/other/path`.
+guest_commands = false
