@@ -8,7 +8,7 @@ use crate::app::{App, MessageKind};
 use crate::config::LineNumbers;
 use crate::mode::{Mode, VisualKind};
 use crate::syntax::to_tui_color;
-use crate::text;
+use crate::text::{self, Position};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -219,6 +219,24 @@ fn draw_text(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, gu
                 style = style.bg(palette.search);
             }
 
+            // Another participant's selection, drawn dimmer than your own.
+            if app.config.session.show_remote_cursors {
+                for remote in &app.remote_cursors {
+                    if remote.id == app.rendering_as || remote.buffer_index != app.current {
+                        continue;
+                    }
+                    if let Some((from, to)) = remote.selection {
+                        let here = Position::new(line_index, column);
+                        if here >= from && here <= to {
+                            style = style.bg(Color::Indexed(238));
+                        }
+                    }
+                    if remote.cursor.line == line_index && remote.cursor.col == column {
+                        style = style.bg(Color::Indexed(remote.color)).fg(Color::Black);
+                    }
+                }
+            }
+
             if let Some(range) = &selection {
                 let char_index = line_start_char + column;
                 let selected = if linewise_selection {
@@ -268,6 +286,29 @@ fn draw_text(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, gu
         }
         if let Some(style) = pending_style {
             spans.push(Span::styled(pending, style));
+        }
+
+        // Tag the line with the names of anyone whose caret is on it, so you
+        // can tell at a glance who is where.
+        if app.config.session.show_remote_cursors {
+            let names: Vec<&crate::session::RemoteCursor> = app
+                .remote_cursors
+                .iter()
+                .filter(|remote| {
+                    remote.id != app.rendering_as
+                        && remote.buffer_index == app.current
+                        && remote.cursor.line == line_index
+                })
+                .collect();
+            for remote in names {
+                spans.push(Span::styled(
+                    format!(" {} ", remote.name),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Indexed(remote.color)),
+                ));
+                emitted += remote.name.chars().count() + 2;
+            }
         }
 
         // Extend the cursor line's highlight across the rest of the row.
@@ -437,6 +478,12 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, palette: &Palette) {
     );
 
     let mut middle = String::new();
+    if let Some(guests) = app.shared_guests {
+        middle.push_str(&format!(
+            "shared · {guests} guest{}  ",
+            if guests == 1 { "" } else { "s" }
+        ));
+    }
     if let Some(recording) = &app.recording {
         middle.push_str(&format!("recording @{}  ", recording.register));
     }
@@ -450,7 +497,11 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, palette: &Palette) {
 
     let mode_label = format!(" {} ", mode.label());
     let used = mode_label.chars().count() + left.chars().count() + right.chars().count();
-    let gap = (area.width as usize).saturating_sub(used + middle.chars().count());
+    // Always keep a separator, even when the bar is too narrow for
+    // everything; ratatui truncates the overflow on the right.
+    let gap = (area.width as usize)
+        .saturating_sub(used + middle.chars().count())
+        .max(1);
 
     let line = Line::from(vec![
         Span::styled(mode_label, mode_style),

@@ -111,29 +111,9 @@ impl Registers {
 /// Copy to the terminal's clipboard with OSC 52, which works over SSH and
 /// inside tmux where a native clipboard API would not.
 fn set_system_clipboard(text: &str) {
-    let encoded = base64_encode(text.as_bytes());
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     let mut out = std::io::stdout();
     let _ = write!(out, "\x1b]52;c;{encoded}\x07");
     let _ = out.flush();
-}
-
-fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(TABLE[(n >> (18 - i * 6) & 0x3f) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }

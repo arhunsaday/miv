@@ -46,3 +46,32 @@ max_highlight_lines = 50000
 
 # Paint the theme's background colour instead of leaving your terminal's.
 theme_background = false
+
+# Shared editing sessions (:share). Everything here is off until you run
+# :share — miv never opens a listener on its own.
+[session]
+# Interface the listener binds to. Loopback by default: reaching a session
+# from another machine should be deliberate — an SSH tunnel, or a VPN address
+# you set here on purpose.
+bind = "127.0.0.1"
+
+# 0 picks a free port, which is usually what you want. :share --port overrides.
+port = 0
+
+# The name other participants see. Defaults to $USER.
+# name = "arhun"
+
+# What someone can do the moment they connect: "read" or "write".
+default_access = "read"
+
+# Announce joins, leaves and access changes in the message line.
+announce = true
+
+max_participants = 8
+
+# Draw other participants' carets, selections and name tags in your view.
+show_remote_cursors = true
+
+# Let guests run `:` commands. Deliberately separate from write access:
+# editing text is a much smaller grant than `:w /some/other/path`.
+guest_commands = false

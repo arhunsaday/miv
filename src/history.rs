@@ -91,6 +91,12 @@ impl History {
         Some(txn)
     }
 
+    /// How many committed transactions exist. Used to detect whether a
+    /// command changed the buffer at all.
+    pub fn revision(&self) -> usize {
+        self.undo.len()
+    }
+
     pub fn mark_saved(&mut self) {
         self.saved_at = self.undo.len();
     }

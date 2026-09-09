@@ -12,8 +12,12 @@
 //! that bundle in and out around a command means every existing command works
 //! per-participant without knowing sessions exist.
 
+pub mod client;
+pub mod commands;
 pub mod protocol;
 pub mod server;
+#[cfg(test)]
+mod tests;
 pub mod web;
 
 use crate::app::{App, Message, Prompt};
@@ -189,7 +193,6 @@ pub struct Session {
     pub shutdown: Arc<AtomicBool>,
     pub default_access: Access,
     pub announce: bool,
-    pub max_participants: usize,
 }
 
 impl Session {
@@ -201,7 +204,6 @@ impl Session {
         shutdown: Arc<AtomicBool>,
         default_access: Access,
         announce: bool,
-        max_participants: usize,
     ) -> Self {
         Self {
             participants: vec![Participant::host(host_name)],
@@ -212,7 +214,6 @@ impl Session {
             shutdown,
             default_access,
             announce,
-            max_participants,
         }
     }
 
@@ -243,6 +244,14 @@ impl Session {
                 color: p.color,
                 access: p.access,
                 mode: p.state.mode.label().to_string(),
+                via: if p.id == HOST_ID {
+                    "host"
+                } else if p.is_web {
+                    "browser"
+                } else {
+                    "terminal"
+                }
+                .to_string(),
                 line: p.state.cursor.line + 1,
                 file: app
                     .buffers
@@ -260,6 +269,15 @@ impl Session {
             reason: "the host ended the session".to_string(),
         });
     }
+}
+
+/// Copy the live editor state back into whichever participant owns it.
+///
+/// `activate` only does this when it switches away, so without an explicit
+/// sync the active participant's stored caret goes stale — and that is the
+/// caret every other participant is shown.
+fn sync_live(app: &App, session: &mut Session) {
+    session.participants[session.live].state = capture(app);
 }
 
 /// Make `target`'s state the live editor state.
@@ -290,6 +308,10 @@ pub fn shift_offset(offset: usize, change: &Change) -> usize {
 
 /// Run `action` as the given participant, then move everyone else's caret to
 /// keep it on the character it was pointing at.
+///
+/// The session is put back into the editor *before* the action runs, because
+/// the action may be an ex command that needs to see it — `:who` and `:grant`
+/// are dispatched through here like any other keystroke.
 pub fn dispatch(app: &mut App, actor: u32, action: impl FnOnce(&mut App)) {
     let Some(mut session) = app.session.take() else {
         action(app);
@@ -303,25 +325,44 @@ pub fn dispatch(app: &mut App, actor: u32, action: impl FnOnce(&mut App)) {
     let buffer_index = session.participants[index].state.buffer_index;
     // Snapshot the others as character offsets against the text as it is now,
     // because a Position means nothing once the lines above it change.
-    let mut snapshots: Vec<(usize, usize, usize)> = Vec::new();
+    let mut snapshots: Vec<(u32, usize, usize)> = Vec::new();
     for (i, participant) in session.participants.iter().enumerate() {
         if i == index || participant.state.buffer_index != buffer_index {
             continue;
         }
         let rope = &app.buffers[buffer_index].rope;
         snapshots.push((
-            i,
+            participant.id,
             text::pos_to_char(rope, participant.state.cursor),
             text::pos_to_char(rope, participant.state.visual_anchor),
         ));
     }
 
     activate(app, &mut session, index);
+    let token = session.token.clone();
+    app.session = Some(session);
+
     action(app);
+
+    // `:unshare` may have ended the session from inside the action.
+    let Some(mut session) = app.session.take() else {
+        return;
+    };
+    if session.token != token {
+        // A different session entirely; the live state belongs to its host.
+        session.live = 0;
+        sync_live(app, &mut session);
+        app.session = Some(session);
+        refresh_remote_cursors(app);
+        return;
+    }
 
     let edits = app.buffers[buffer_index].drain_edits();
     if !edits.is_empty() {
-        for (i, mut cursor, mut anchor) in snapshots {
+        for (id, mut cursor, mut anchor) in snapshots {
+            let Some(i) = session.index_of(id) else {
+                continue;
+            };
             for change in &edits {
                 cursor = shift_offset(cursor, change);
                 anchor = shift_offset(anchor, change);
@@ -338,6 +379,7 @@ pub fn dispatch(app: &mut App, actor: u32, action: impl FnOnce(&mut App)) {
 
     // Leave the host's state live so the real terminal draws the host's view.
     activate(app, &mut session, 0);
+    sync_live(app, &mut session);
     app.session = Some(session);
     refresh_remote_cursors(app);
 }
@@ -347,8 +389,10 @@ pub fn dispatch(app: &mut App, actor: u32, action: impl FnOnce(&mut App)) {
 pub fn refresh_remote_cursors(app: &mut App) {
     let Some(session) = &app.session else {
         app.remote_cursors.clear();
+        app.shared_guests = None;
         return;
     };
+    app.shared_guests = Some(session.guests());
     app.remote_cursors = session
         .participants
         .iter()
@@ -378,6 +422,9 @@ pub fn render_remote_frames(app: &mut App) {
     let Some(mut session) = app.session.take() else {
         return;
     };
+    // Each guest's frame sets the viewport to their terminal size; the host's
+    // own motions must not inherit it.
+    let host_viewport = app.viewport;
 
     for index in 0..session.participants.len() {
         if !session.participants[index].is_remote() {
@@ -443,7 +490,10 @@ pub fn render_remote_frames(app: &mut App) {
     }
 
     activate(app, &mut session, 0);
+    sync_live(app, &mut session);
+    app.viewport = host_viewport;
     app.session = Some(session);
+    refresh_remote_cursors(app);
 }
 
 /// Send the participant list to everyone; cheap and only on membership or

@@ -1144,6 +1144,11 @@ fn insert_mode(app: &mut App, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('c') => return app.leave_insert(),
+            // Ctrl-J and Ctrl-M *are* LF and CR.
+            KeyCode::Char('j') | KeyCode::Char('m') => return app.insert_newline(),
+            // Anything else control-modified is not a character to insert.
+            // Without this, Ctrl-K typed a literal `k`.
+            KeyCode::Char(_) => return,
             _ => {}
         }
     }
@@ -1186,6 +1191,13 @@ fn insert_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn replace_mode(app: &mut App, key: KeyEvent) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => app.leave_insert(),
+            KeyCode::Char('j') | KeyCode::Char('m') => app.insert_newline(),
+            _ => {}
+        };
+    }
     match key.code {
         KeyCode::Esc => app.leave_insert(),
         KeyCode::Char(c) => app.replace_at_cursor(c),

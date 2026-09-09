@@ -684,10 +684,179 @@ fn an_alt_key_is_treated_as_escape_followed_by_that_key() {
 }
 
 #[test]
+fn unbound_control_keys_do_not_insert_their_letter() {
+    // Ctrl-K used to type a literal `k`, because the insert-mode arm matched
+    // the character without looking at the modifiers.
+    let mut app = app_with("");
+    press(&mut app, "iab<C-k>c<Esc>");
+    assert_eq!(content(&app), "abc\n");
+
+    // Ctrl-J and Ctrl-M really are LF and CR, so they break the line.
+    let mut app = app_with("");
+    press(&mut app, "iab<C-j>c<Esc>");
+    assert_eq!(content(&app), "ab\nc\n");
+
+    // The same applies on the command line, where Ctrl-J submits.
+    let mut app = app_with("one\ntwo\nthree");
+    press(&mut app, ":2<C-j>");
+    assert_eq!(cursor(&app), (1, 0));
+
+    let mut app = app_with("a");
+    press(&mut app, ":se<C-k>t nonumber<CR>");
+    assert_eq!(
+        app.config.editor.line_numbers,
+        crate::config::LineNumbers::None
+    );
+}
+
+#[test]
 fn key_notation_round_trips() {
     let input = "iabc<Esc>3dd<C-r><CR>";
     let parsed = keys::parse(input);
     assert_eq!(keys::encode_all(&parsed), input);
+}
+
+// -- configuration ----------------------------------------------------------
+
+fn write_config(body: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "miv-config-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("config.toml");
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn a_full_configuration_file_parses() {
+    let path = write_config(
+        r#"
+[editor]
+tab_width = 2
+expand_tab = false
+shift_width = 8
+scrolloff = 5
+line_numbers = "hybrid"
+cursorline = false
+ignore_case = false
+smart_case = false
+wrap_search = false
+
+[appearance]
+theme = "InspiredGitHub"
+syntax_highlighting = false
+max_highlight_lines = 1000
+theme_background = true
+
+[session]
+bind = "127.0.0.1"
+port = 7420
+name = "arhun"
+default_access = "write"
+announce = false
+max_participants = 3
+show_remote_cursors = false
+guest_commands = true
+"#,
+    );
+    let config = crate::config::Config::load(&path).expect("should parse");
+    assert_eq!(config.editor.tab_width, 2);
+    assert!(!config.editor.expand_tab);
+    assert_eq!(config.editor.shift_width, 8);
+    assert_eq!(
+        config.editor.line_numbers,
+        crate::config::LineNumbers::Hybrid
+    );
+    assert_eq!(config.appearance.theme, "InspiredGitHub");
+    assert!(config.appearance.theme_background);
+    assert_eq!(config.session.port, 7420);
+    assert_eq!(config.session.name, "arhun");
+    assert_eq!(
+        config.session.default_access,
+        crate::session::protocol::Access::Write
+    );
+    assert!(config.session.guest_commands);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn a_partial_configuration_keeps_the_defaults() {
+    let path = write_config(
+        "[editor]
+tab_width = 3
+",
+    );
+    let config = crate::config::Config::load(&path).unwrap();
+    let defaults = crate::config::Config::default();
+    assert_eq!(config.editor.tab_width, 3);
+    assert_eq!(config.editor.shift_width, defaults.editor.shift_width);
+    assert_eq!(config.appearance.theme, defaults.appearance.theme);
+    assert_eq!(config.session.bind, defaults.session.bind);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn a_mistyped_option_is_an_error_rather_than_a_silent_default() {
+    let path = write_config(
+        "[editor]
+tab_widht = 2
+",
+    );
+    let error = crate::config::Config::load(&path).unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("tab_widht"), "{text}");
+
+    let path = write_config("[editor]\ntab_width = \"four\"\n");
+    assert!(crate::config::Config::load(&path).is_err());
+
+    let path = write_config("[editor]\nline_numbers = \"sometimes\"\n");
+    assert!(crate::config::Config::load(&path).is_err());
+
+    let path = write_config(
+        "[nonsense]
+x = 1
+",
+    );
+    assert!(crate::config::Config::load(&path).is_err());
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn impossible_values_are_rejected() {
+    let path = write_config(
+        "[editor]
+tab_width = 0
+",
+    );
+    let error = format!("{:#}", crate::config::Config::load(&path).unwrap_err());
+    assert!(error.contains("tab_width"), "{error}");
+
+    let path = write_config(
+        "[session]
+max_participants = 0
+",
+    );
+    let error = format!("{:#}", crate::config::Config::load(&path).unwrap_err());
+    assert!(error.contains("max_participants"), "{error}");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn the_default_session_settings_are_the_safe_ones() {
+    // These defaults are a security posture, not a preference: a listener that
+    // reached the network, or guests who could edit or run commands the moment
+    // they connected, would all be surprising.
+    let session = crate::config::Config::default().session;
+    assert_eq!(session.bind, "127.0.0.1");
+    assert_eq!(
+        session.default_access,
+        crate::session::protocol::Access::Read
+    );
+    assert!(!session.guest_commands);
+    assert!(session.max_participants <= 16);
 }
 
 // -- unicode ----------------------------------------------------------------
@@ -712,4 +881,22 @@ fn combining_characters_are_not_split_by_word_motions() {
     let mut app = app_with("café bar");
     press(&mut app, "dw");
     assert_eq!(content(&app), "bar\n");
+}
+#[test]
+fn undoing_a_delete_of_the_last_line_leaves_no_blank_line() {
+    // The buffer guarantees a trailing newline. Re-adding it after a deletion
+    // used to bypass the transaction, so undo could not take it back.
+    let mut app = app_with("untouched");
+    press(&mut app, "dd");
+    assert_eq!(content(&app), "\n");
+    press(&mut app, "u");
+    assert_eq!(content(&app), "untouched\n");
+    press(&mut app, "<C-r>");
+    assert_eq!(content(&app), "\n");
+
+    let mut app = app_with("one\ntwo");
+    press(&mut app, "Gdd");
+    assert_eq!(content(&app), "one\n");
+    press(&mut app, "u");
+    assert_eq!(content(&app), "one\ntwo\n");
 }
