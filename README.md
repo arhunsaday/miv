@@ -1,4 +1,4 @@
-# miv
+# Miv
 
 A modal text editor for the terminal, written in Rust.
 
@@ -9,7 +9,9 @@ miv src/main.rs
 
 Press `:help` inside the editor for the full key reference.
 
-## What works
+![Editor demo screenshot](docs/web.png)
+
+## Vim compatibility
 
 **Modes** — normal, insert, replace (`R`), visual, visual line, plus the `:`
 and `/` prompts.
@@ -156,22 +158,22 @@ miv --no-config            start with built-in defaults
 
 ## How it is put together
 
-| Module | Responsibility |
-| --- | --- |
-| `text` | Positions, rope queries, character classes, display widths |
-| `buffer` | One file: rope, cursor, viewport, marks, atomic save |
-| `history` | Invertible transactions; undo granularity |
-| `keymap` | The pending-state machine that parses the grammar |
-| `motion` | Motions, and turning `cursor → target` into a range |
-| `textobject` | `iw`, `a(`, … |
-| `operator` | Applying `d c y > < gu gU g~` to a range |
-| `command` | The `:` and `/` prompts, ex commands, `:s` |
-| `search` | Regex search over the rope |
-| `register` | Registers, including the OSC 52 clipboard bridge |
-| `syntax` | syntect with checkpointed parser state |
-| `app` | Editor state and the editing actions |
-| `ui` | ratatui rendering |
-| `session` | Shared sessions: participants, protocol, server, web and terminal clients |
+| Module       | Responsibility                                                            |
+| ------------ | ------------------------------------------------------------------------- |
+| `text`       | Positions, rope queries, character classes, display widths                |
+| `buffer`     | One file: rope, cursor, viewport, marks, atomic save                      |
+| `history`    | Invertible transactions; undo granularity                                 |
+| `keymap`     | The pending-state machine that parses the grammar                         |
+| `motion`     | Motions, and turning `cursor → target` into a range                       |
+| `textobject` | `iw`, `a(`, …                                                             |
+| `operator`   | Applying `d c y > < gu gU g~` to a range                                  |
+| `command`    | The `:` and `/` prompts, ex commands, `:s`                                |
+| `search`     | Regex search over the rope                                                |
+| `register`   | Registers, including the OSC 52 clipboard bridge                          |
+| `syntax`     | syntect with checkpointed parser state                                    |
+| `app`        | Editor state and the editing actions                                      |
+| `ui`         | ratatui rendering                                                         |
+| `session`    | Shared sessions: participants, protocol, server, web and terminal clients |
 
 Three decisions worth knowing about:
 
