@@ -8,6 +8,7 @@ use crate::motion::{EditRange, FindTarget};
 use crate::operator::EditOptions;
 use crate::register::{RegisterContent, RegisterKind, Registers};
 use crate::search::Search;
+use crate::session::{RemoteCursor, Session};
 use crate::syntax::SyntaxEngine;
 use crate::text::{self, Position};
 use anyhow::Result;
@@ -116,6 +117,17 @@ pub struct App {
     pub command_history: Vec<String>,
     pub search_history: Vec<String>,
     replay_budget: usize,
+    /// Present while this editor is hosting a shared session.
+    pub session: Option<Session>,
+    /// Every participant's caret, republished after each command so the
+    /// renderer can draw them without borrowing the session.
+    pub remote_cursors: Vec<RemoteCursor>,
+    /// Whose view is being drawn right now; their own caret is drawn by the
+    /// terminal, not as a remote one.
+    pub rendering_as: u32,
+    /// Guest count when sharing, for the status line. Kept separately because
+    /// the session itself is checked out while frames are drawn.
+    pub shared_guests: Option<usize>,
 }
 
 impl App {
@@ -162,6 +174,10 @@ impl App {
             command_history: Vec::new(),
             search_history: Vec::new(),
             replay_budget: REPLAY_BUDGET,
+            session: None,
+            remote_cursors: Vec::new(),
+            rendering_as: crate::session::HOST_ID,
+            shared_guests: None,
         };
 
         if files.is_empty() {

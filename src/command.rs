@@ -74,6 +74,14 @@ pub fn prompt_key(app: &mut App, key: KeyEvent) {
                 cancel_prompt(app);
                 return;
             }
+            // Ctrl-J and Ctrl-M are LF and CR, so they submit.
+            KeyCode::Char('j') | KeyCode::Char('m') => {
+                submit_prompt(app);
+                return;
+            }
+            // Everything else control-modified is not text: typing Ctrl-K into
+            // the command line used to leave a literal `k` behind.
+            KeyCode::Char(_) => return,
             _ => {}
         }
     }
@@ -325,6 +333,20 @@ pub fn execute(app: &mut App, input: &str) {
         "noh" | "nohl" | "nohlsearch" => app.search_highlight = false,
         "s" | "substitute" => substitute(app, parsed.range, &parsed.args),
         "set" | "se" => set_option(app, &args),
+        "share" => crate::session::commands::share(app, &parsed.args),
+        "unshare" => crate::session::commands::unshare(app),
+        "who" | "participants" => crate::session::commands::who(app),
+        "grant" => crate::session::commands::set_access(
+            app,
+            &args,
+            crate::session::protocol::Access::Write,
+        ),
+        "revoke" => {
+            crate::session::commands::set_access(app, &args, crate::session::protocol::Access::Read)
+        }
+        "follow" => crate::session::commands::follow(app, &args),
+        "unfollow" => crate::session::commands::follow(app, ""),
+        "say" => crate::session::commands::say(app, parsed.args.trim()),
         "h" | "help" => show_help(app),
         other => app.set_error(format!("E492: Not an editor command: {other}")),
     }

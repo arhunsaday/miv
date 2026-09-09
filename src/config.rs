@@ -78,11 +78,56 @@ impl Default for AppearanceConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionConfig {
+    /// Interface the session listener binds to. Loopback by default: reaching
+    /// it from another machine should be a deliberate act (an SSH tunnel, a
+    /// VPN address), never the default.
+    pub bind: String,
+    /// 0 picks a free port, which is usually what you want.
+    pub port: u16,
+    /// The name other participants see. Defaults to `$USER`.
+    pub name: String,
+    /// What a participant may do the moment they connect.
+    pub default_access: crate::session::protocol::Access,
+    /// Announce joins, leaves and access changes in the message line.
+    pub announce: bool,
+    pub max_participants: usize,
+    /// Draw other participants' carets and selections in your own view.
+    pub show_remote_cursors: bool,
+    /// Let guests run `:` commands.
+    ///
+    /// Off by default, and deliberately separate from write access: editing
+    /// text is a much smaller grant than running `:w /some/other/path` or
+    /// `:e` on any file the host can read. Turn this on only for people you
+    /// would hand the keyboard to.
+    pub guest_commands: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            bind: "127.0.0.1".to_string(),
+            port: 0,
+            name: std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "host".to_string()),
+            default_access: crate::session::protocol::Access::Read,
+            announce: true,
+            max_participants: 8,
+            show_remote_cursors: true,
+            guest_commands: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub editor: EditorConfig,
     pub appearance: AppearanceConfig,
+    pub session: SessionConfig,
 }
 
 impl Config {
@@ -103,6 +148,14 @@ impl Config {
         anyhow::ensure!(
             self.editor.shift_width > 0,
             "editor.shift_width must be at least 1"
+        );
+        anyhow::ensure!(
+            !self.session.bind.is_empty(),
+            "session.bind must be an address to bind to"
+        );
+        anyhow::ensure!(
+            self.session.max_participants >= 1,
+            "session.max_participants must be at least 1"
         );
         Ok(())
     }

@@ -228,10 +228,22 @@ impl Buffer {
         self.history.commit(cursor);
     }
 
+    /// Restore the "always ends with a newline" invariant.
+    ///
+    /// This is a real edit, so it is recorded like any other: an earlier
+    /// version inserted the newline behind history's back, and undoing a
+    /// deletion of the last line then left a spurious blank line behind.
     fn ensure_trailing_newline(&mut self) {
         let len = self.rope.len_chars();
         if len == 0 || self.rope.char(len - 1) != '\n' {
             self.rope.insert(len, "\n");
+            let change = Change {
+                at: len,
+                removed: String::new(),
+                inserted: "\n".to_string(),
+            };
+            self.history.record(change.clone());
+            self.edits.push(change);
         }
     }
 
@@ -245,7 +257,6 @@ impl Buffer {
             self.rope.insert(change.at, &change.inserted);
         }
         self.edits.push(change.clone());
-        self.ensure_trailing_newline();
         self.syntax_cache.invalidate_from(line);
     }
 
@@ -256,6 +267,7 @@ impl Buffer {
         for change in txn.changes.iter().rev() {
             self.apply_raw(&change.inverted());
         }
+        self.ensure_trailing_newline();
         self.cursor = text::clamp(&self.rope, txn.before, false);
         self.desired_col = self.cursor.col;
         true
@@ -268,6 +280,7 @@ impl Buffer {
         for change in &txn.changes {
             self.apply_raw(change);
         }
+        self.ensure_trailing_newline();
         self.cursor = text::clamp(&self.rope, txn.after, false);
         self.desired_col = self.cursor.col;
         true

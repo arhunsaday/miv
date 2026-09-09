@@ -5,7 +5,7 @@
 //! frames over WebSocket, so one parser serves both transports.
 
 use ratatui::buffer::Cell;
-use ratatui::style::{Color, Modifier};
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when a change would confuse an older client. The host refuses a
@@ -43,9 +43,16 @@ pub enum ClientMessage {
         rows: u16,
     },
     /// Keystrokes in miv's own notation, e.g. `ciw` or `<Esc>`.
-    Keys { keys: String },
-    Paste { text: String },
-    Resize { cols: u16, rows: u16 },
+    Keys {
+        keys: String,
+    },
+    Paste {
+        text: String,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     /// Ask the host for write access.
     RequestWrite,
     Bye,
@@ -72,9 +79,15 @@ pub enum ServerMessage {
         cursor: Option<[u16; 2]>,
     },
     /// Who is currently connected, for the client's participant list.
-    Roster { participants: Vec<RosterEntry> },
-    Notice { text: String },
-    Closed { reason: String },
+    Roster {
+        participants: Vec<RosterEntry>,
+    },
+    Notice {
+        text: String,
+    },
+    Closed {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,6 +97,8 @@ pub struct RosterEntry {
     pub color: u8,
     pub access: Access,
     pub mode: String,
+    /// How this participant is connected: host, terminal or browser.
+    pub via: String,
     pub line: usize,
     pub file: String,
     pub is_host: bool,
@@ -115,13 +130,6 @@ impl WireCell {
             modifiers: cell.modifier.bits(),
         }
     }
-
-    pub fn apply_to(&self, cell: &mut Cell) {
-        cell.set_symbol(&self.symbol);
-        cell.fg = self.fg.into();
-        cell.bg = self.bg.into();
-        cell.modifier = Modifier::from_bits_truncate(self.modifiers);
-    }
 }
 
 /// A terminal colour in a form both clients can render: the browser needs
@@ -131,8 +139,14 @@ impl WireCell {
 pub enum WireColor {
     /// The viewer's own default foreground or background.
     Default,
-    Indexed { i: u8 },
-    Rgb { r: u8, g: u8, b: u8 },
+    Indexed {
+        i: u8,
+    },
+    Rgb {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
 }
 
 impl From<Color> for WireColor {
@@ -171,24 +185,3 @@ impl From<WireColor> for Color {
         }
     }
 }
-
-/// The 24-bit values the browser client paints indexed colours with, so a web
-/// viewer sees roughly what the terminal viewer sees.
-pub const ANSI_PALETTE: [(u8, u8, u8); 16] = [
-    (0x1c, 0x1f, 0x26),
-    (0xbf, 0x61, 0x6a),
-    (0xa3, 0xbe, 0x8c),
-    (0xeb, 0xcb, 0x8b),
-    (0x81, 0xa1, 0xc1),
-    (0xb4, 0x8e, 0xad),
-    (0x88, 0xc0, 0xd0),
-    (0xd8, 0xde, 0xe9),
-    (0x4c, 0x56, 0x6a),
-    (0xd0, 0x87, 0x70),
-    (0xb5, 0xd0, 0x9f),
-    (0xf0, 0xd8, 0xa8),
-    (0x9a, 0xb8, 0xd8),
-    (0xc8, 0xa2, 0xc8),
-    (0xa3, 0xd8, 0xe0),
-    (0xec, 0xef, 0xf4),
-];

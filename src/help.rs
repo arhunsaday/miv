@@ -93,4 +93,32 @@ pub const TOPICS: &[(&str, &str)] = &[
     ),
     (":reg :marks", "list registers, marks"),
     (":help", "this list"),
+    ("", ""),
+    ("SHARED SESSIONS", ""),
+    (
+        ":share",
+        "start hosting this editor; prints a URL and an attach command",
+    ),
+    (
+        ":share --write",
+        "...with guests able to edit straight away",
+    ),
+    (
+        ":share --port N",
+        "...on a fixed port, for a stable SSH tunnel",
+    ),
+    (
+        ":who",
+        "participants, where they are, and how they connected",
+    ),
+    (":grant {name}", "let a guest edit"),
+    (":revoke {name}", "put a guest back to read-only"),
+    (":follow {name}", "mirror another participant's viewport"),
+    (":unfollow", "go back to your own viewport"),
+    (":say {text}", "send a line to everyone in the session"),
+    (":unshare", "end the session"),
+    (
+        "miv --attach",
+        "join a session from another terminal (Ctrl-\\ detaches)",
+    ),
 ];
