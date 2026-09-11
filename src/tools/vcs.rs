@@ -53,7 +53,7 @@ pub fn diff_against_head(
         .and_then(|n| n.to_str())
         .ok_or_else(|| "no file name".to_string())?;
 
-    let inside_repository = crate::external::run(
+    let inside_repository = crate::tools::external::run(
         &[
             "git".to_string(),
             "rev-parse".to_string(),
@@ -70,7 +70,7 @@ pub fn diff_against_head(
         return Err("not a git repository".to_string());
     }
 
-    let show = crate::external::run(
+    let show = crate::tools::external::run(
         &[
             "git".to_string(),
             "--no-pager".to_string(),

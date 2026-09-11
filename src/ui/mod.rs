@@ -4,11 +4,15 @@
 //! against the previous frame, so redraws touch only the cells that changed
 //! and the display never flickers.
 
+pub mod completion;
+pub mod picker;
+pub mod sidebar;
+
 use crate::app::{App, MessageKind};
 use crate::config::LineNumbers;
+use crate::core::text::{self, Position};
 use crate::mode::{Mode, VisualKind};
 use crate::syntax::to_tui_color;
-use crate::text::{self, Position};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -18,14 +22,14 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 /// Colours pulled from the syntect theme so the chrome matches the text.
-struct Palette {
-    foreground: Color,
-    background: Color,
-    selection: Color,
-    line_number: Color,
-    line_number_active: Color,
-    cursorline: Color,
-    search: Color,
+pub struct Palette {
+    pub foreground: Color,
+    pub background: Color,
+    pub selection: Color,
+    pub line_number: Color,
+    pub line_number_active: Color,
+    pub cursorline: Color,
+    pub search: Color,
 }
 
 impl Palette {
@@ -73,37 +77,122 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
     let palette = Palette::from(app);
-    let gutter = app.gutter_width();
 
-    // Record the viewport so motions and scrolling agree with what is drawn.
-    app.viewport.height = chunks[0].height as usize;
-    app.viewport.text_width = (chunks[0].width as usize).saturating_sub(gutter);
-    app.scroll_to_cursor();
-
-    if app.buffer().is_empty_scratch() && app.buffers.len() == 1 {
-        draw_welcome(frame, chunks[0], &palette);
+    // The sidebar takes its strip first; the windows divide what is left.
+    let sidebar_width = app.workspace.sidebar.width().min(chunks[0].width / 2);
+    let (sidebar_area, windows_area) = if sidebar_width == 0 {
+        (None, chunks[0])
     } else {
-        draw_text(frame, chunks[0], app, &palette, gutter);
-        place_cursor(frame, chunks[0], app, gutter);
+        let side = app.workspace.sidebar.side;
+        let on_left = side == crate::view::sidebar::Side::Left;
+        let sidebar = Rect {
+            width: sidebar_width,
+            x: if on_left {
+                chunks[0].x
+            } else {
+                chunks[0].right().saturating_sub(sidebar_width)
+            },
+            ..chunks[0]
+        };
+        let rest = Rect {
+            x: if on_left {
+                chunks[0].x + sidebar_width
+            } else {
+                chunks[0].x
+            },
+            width: chunks[0].width.saturating_sub(sidebar_width),
+            ..chunks[0]
+        };
+        (Some(sidebar), rest)
+    };
+
+    let separators = app.workspace.arrange(windows_area);
+
+    // Each window is drawn by focusing it in turn, which is what lets one
+    // renderer serve every window without knowing there is more than one.
+    let focused = app.workspace.focused_id();
+    app.sync_window();
+    let windows: Vec<(crate::view::layout::WindowId, Rect)> = app
+        .workspace
+        .windows()
+        .iter()
+        .map(|window| (window.id, window.area))
+        .collect();
+
+    for (id, window_area) in &windows {
+        app.workspace.focus(*id);
+        app.load_window();
+        draw_window(frame, *window_area, app, &palette, *id == focused);
+        app.sync_window();
+    }
+    app.workspace.focus(focused);
+    app.load_window();
+
+    let separator_style = Style::default().fg(palette.line_number);
+    for separator in separators {
+        frame.render_widget(
+            Paragraph::new(vec![Line::from("│"); separator.height as usize]).style(separator_style),
+            separator,
+        );
     }
 
-    draw_status(frame, chunks[1], app, &palette);
-    draw_message(frame, chunks[2], app, &palette);
+    if let Some(area) = sidebar_area {
+        let height = area.height.saturating_sub(1) as usize;
+        app.workspace.sidebar.explorer.scroll_into_view(height);
+        sidebar::draw(frame, area, app, &palette);
+    }
+
+    draw_message(frame, chunks[1], app, &palette);
 
     if app.overlay.is_some() {
         draw_overlay(frame, area, app, &palette);
     }
-    if app.mode.is_prompt() {
-        place_prompt_cursor(frame, chunks[2], app);
+    // The picker sits on top of everything and owns the cursor while it is up.
+    if app.picker.is_some() {
+        picker::draw(frame, area, app, &palette);
+        picker::place_cursor(frame, area, app);
+    } else if app.mode.is_prompt() {
+        place_prompt_cursor(frame, chunks[1], app);
     }
+}
+
+/// One window: its text, and its own status line along the bottom.
+fn draw_window(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, is_focused: bool) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let text_area = Rect {
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    let status_area = Rect {
+        y: area.bottom().saturating_sub(1),
+        height: 1,
+        ..area
+    };
+
+    let gutter = app.gutter_width();
+    app.viewport.height = text_area.height as usize;
+    app.viewport.text_width = (text_area.width as usize).saturating_sub(gutter);
+    app.scroll_to_cursor();
+
+    if app.buffer().is_empty_scratch() && app.buffers.len() == 1 {
+        draw_welcome(frame, text_area, palette);
+    } else {
+        draw_text(frame, text_area, app, palette, gutter);
+        if is_focused && !app.sidebar_focused() {
+            if let Some(cursor) = place_cursor(frame, text_area, app, gutter) {
+                if app.completion.is_some() {
+                    completion::draw(frame, text_area, cursor, app, palette);
+                }
+            }
+        }
+    }
+    draw_status(frame, status_area, app, palette, is_focused);
 }
 
 fn draw_text(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, gutter: usize) {
@@ -514,9 +603,9 @@ fn contrast(color: Color) -> Color {
     }
 }
 
-fn place_cursor(frame: &mut Frame, area: Rect, app: &App, gutter: usize) {
+fn place_cursor(frame: &mut Frame, area: Rect, app: &App, gutter: usize) -> Option<(u16, u16)> {
     if app.mode.is_prompt() || app.overlay.is_some() {
-        return;
+        return None;
     }
     let buffer = app.buffer();
     let column = text::screen_col(
@@ -528,7 +617,9 @@ fn place_cursor(frame: &mut Frame, area: Rect, app: &App, gutter: usize) {
     let y = area.y + buffer.cursor.line.saturating_sub(buffer.view_top) as u16;
     if x < area.right() && y < area.bottom() {
         frame.set_cursor_position((x, y));
+        return Some((x, y));
     }
+    None
 }
 
 fn draw_welcome(frame: &mut Frame, area: Rect, palette: &Palette) {
@@ -580,7 +671,7 @@ fn draw_welcome(frame: &mut Frame, area: Rect, palette: &Palette) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_status(frame: &mut Frame, area: Rect, app: &App, palette: &Palette) {
+fn draw_status(frame: &mut Frame, area: Rect, app: &App, palette: &Palette, is_focused: bool) {
     let buffer = app.buffer();
     let mode = app.mode;
     let mode_style = Style::default()
@@ -652,7 +743,11 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, palette: &Palette) {
         middle.push_str("op-pending  ");
     }
 
-    let mode_label = format!(" {} ", mode.label());
+    let mode_label = if is_focused {
+        format!(" {} ", mode.label())
+    } else {
+        "   ".to_string()
+    };
     let used = mode_label.chars().count() + left.chars().count() + right.chars().count();
     // Always keep a separator, even when the bar is too narrow for
     // everything; ratatui truncates the overflow on the right.
@@ -689,7 +784,6 @@ fn draw_message(frame: &mut Frame, area: Rect, app: &App, palette: &Palette) {
             Paragraph::new(Line::from(Span::styled(message.text.clone(), style))),
             area,
         );
-        return;
     }
 }
 

@@ -6,11 +6,11 @@
 
 use crate::app::{App, Viewport};
 use crate::config::Config;
+use crate::core::search::{self, Direction};
+use crate::core::text::{self, Position};
 use crate::keymap;
 use crate::keys;
 use crate::mode::Mode;
-use crate::search::{self, Direction};
-use crate::text::{self, Position};
 use ropey::Rope;
 
 fn app_with(content: &str) -> App {
@@ -123,13 +123,13 @@ fn saving_preserves_crlf_and_a_missing_final_newline() {
 
     let crlf_path = directory.join("crlf.txt");
     std::fs::write(&crlf_path, b"one\r\ntwo\r\n").unwrap();
-    let mut buffer = crate::buffer::Buffer::open(1, &crlf_path).unwrap();
+    let mut buffer = crate::core::buffer::Buffer::open(1, &crlf_path).unwrap();
     buffer.write(&crlf_path).unwrap();
     assert_eq!(std::fs::read(&crlf_path).unwrap(), b"one\r\ntwo\r\n");
 
     let bare_path = directory.join("bare.txt");
     std::fs::write(&bare_path, b"no newline").unwrap();
-    let mut buffer = crate::buffer::Buffer::open(2, &bare_path).unwrap();
+    let mut buffer = crate::core::buffer::Buffer::open(2, &bare_path).unwrap();
     buffer.write(&bare_path).unwrap();
     assert_eq!(std::fs::read(&bare_path).unwrap(), b"no newline");
 
@@ -143,7 +143,7 @@ fn writing_leaves_no_temporary_file_behind() {
     let path = directory.join("file.txt");
     std::fs::write(&path, b"before\n").unwrap();
 
-    let mut buffer = crate::buffer::Buffer::open(1, &path).unwrap();
+    let mut buffer = crate::core::buffer::Buffer::open(1, &path).unwrap();
     buffer.insert(0, "after ");
     buffer.write(&path).unwrap();
 
@@ -439,8 +439,10 @@ fn macros_record_and_replay() {
 fn a_macro_that_calls_itself_is_stopped() {
     let mut app = app_with("x");
     // Put a self-referential macro in register a by hand.
-    app.registers
-        .yank(Some('a'), crate::register::RegisterContent::charwise("@a"));
+    app.registers.yank(
+        Some('a'),
+        crate::edit::register::RegisterContent::charwise("@a"),
+    );
     press(&mut app, "@a");
     let mut drained = 0;
     while app.queue.pop_front().is_some() && drained < 200_000 {
@@ -716,6 +718,411 @@ fn key_notation_round_trips() {
     assert_eq!(keys::encode_all(&parsed), input);
 }
 
+// -- windows ----------------------------------------------------------------
+
+#[test]
+fn splitting_gives_each_window_its_own_cursor() {
+    let mut app = app_with("1\n2\n3\n4\n5\n6");
+    press(&mut app, ":vsplit<CR>");
+    assert_eq!(app.workspace.count(), 2);
+
+    // Move in the new window; the other one must stay where it was.
+    press(&mut app, "G");
+    assert_eq!(cursor(&app), (5, 0));
+    press(&mut app, "<C-w>w");
+    assert_eq!(cursor(&app), (0, 0), "the other window kept its cursor");
+    press(&mut app, "<C-w>w");
+    assert_eq!(cursor(&app), (5, 0), "and so did this one");
+}
+
+#[test]
+fn two_windows_can_show_different_buffers() {
+    let directory = scratch_dir("windows");
+    let other = directory.join("other.txt");
+    std::fs::write(&other, "other file\n").unwrap();
+
+    let mut app = app_with("first\n");
+    press(&mut app, ":vsplit<CR>");
+    app.open_file(&other).unwrap();
+    app.sync_window();
+    assert_eq!(app.buffer().short_name(), "other.txt");
+
+    press(&mut app, "<C-w>w");
+    assert_eq!(
+        app.buffer().short_name(),
+        "[No Name]",
+        "the first window still shows its own buffer"
+    );
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn windows_can_be_navigated_by_direction() {
+    let mut app = app_with("a\nb\nc");
+    // Lay out two columns, then stack the right one.
+    press(&mut app, ":vsplit<CR>");
+    press(&mut app, ":split<CR>");
+    assert_eq!(app.workspace.count(), 3);
+
+    // Arranging assigns the rectangles that directional focus needs.
+    app.workspace.arrange(ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    });
+    let before = app.workspace.focused_id();
+    press(&mut app, "<C-w>h");
+    assert_ne!(app.workspace.focused_id(), before, "should move left");
+    press(&mut app, "<C-w>l");
+    assert_ne!(
+        app.workspace.focused_id(),
+        0,
+        "and back into the right-hand column"
+    );
+}
+
+#[test]
+fn closing_windows_and_refusing_the_last_one() {
+    let mut app = app_with("text\n");
+    press(&mut app, ":vsplit<CR>");
+    press(&mut app, ":split<CR>");
+    assert_eq!(app.workspace.count(), 3);
+
+    press(&mut app, ":only<CR>");
+    assert_eq!(app.workspace.count(), 1);
+
+    press(&mut app, ":close<CR>");
+    assert_eq!(app.workspace.count(), 1);
+    assert!(app.message.as_ref().unwrap().text.contains("last window"));
+    assert!(!app.should_quit, "closing a window is not quitting");
+}
+
+#[test]
+fn quit_closes_a_window_before_it_leaves_the_editor() {
+    let mut app = app_with("text\n");
+    press(&mut app, ":vsplit<CR>");
+    press(&mut app, ":q<CR>");
+    assert_eq!(app.workspace.count(), 1);
+    assert!(!app.should_quit);
+    press(&mut app, ":q<CR>");
+    assert!(app.should_quit);
+}
+
+#[test]
+fn a_window_showing_a_closed_buffer_falls_back() {
+    let directory = scratch_dir("closed");
+    let other = directory.join("other.txt");
+    std::fs::write(&other, "other\n").unwrap();
+
+    let mut app = app_with("first\n");
+    app.open_file(&other).unwrap();
+    app.sync_window();
+    press(&mut app, ":vsplit<CR>");
+    press(&mut app, ":bd<CR>");
+
+    // Neither window may be left pointing at a buffer that has gone.
+    for window in app.workspace.windows() {
+        assert!(window.buffer_index < app.buffers.len(), "{window:?}");
+    }
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+// -- pickers ----------------------------------------------------------------
+
+#[test]
+fn the_buffer_picker_filters_and_switches() {
+    let directory = scratch_dir("bufpick");
+    let alpha = directory.join("alpha.txt");
+    let beta = directory.join("beta.txt");
+    std::fs::write(&alpha, "a\n").unwrap();
+    std::fs::write(&beta, "b\n").unwrap();
+
+    let mut app = app_with("scratch\n");
+    app.open_file(&alpha).unwrap();
+    app.open_file(&beta).unwrap();
+    app.sync_window();
+
+    press(&mut app, ":buffers<CR>");
+    let picker = app.picker.as_ref().expect("a picker");
+    assert_eq!(picker.total(), 3);
+
+    // Typing narrows it, and the closest match sorts first. Matching is
+    // subsequence-based, so other paths can still match — what matters is the
+    // ranking, not that everything else is excluded.
+    press(&mut app, "alpha");
+    let picker = app.picker.as_ref().unwrap();
+    assert!(picker.matches().len() < 3);
+    assert!(
+        picker.selection().unwrap().label.contains("alpha"),
+        "{:?}",
+        picker.selection().map(|item| item.label.clone())
+    );
+
+    press(&mut app, "<CR>");
+    assert!(app.picker.is_none());
+    assert_eq!(app.buffer().short_name(), "alpha.txt");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn the_command_palette_runs_what_you_pick() {
+    let mut app = app_with("text\n");
+    press(&mut app, "<C-k>");
+    assert!(app.picker.is_some());
+
+    press(&mut app, "side by side");
+    let picker = app.picker.as_ref().unwrap();
+    assert!(
+        picker.selection().unwrap().label.contains("Split side"),
+        "{:?}",
+        picker.selection().map(|item| item.label.clone())
+    );
+    press(&mut app, "<CR>");
+    assert!(app.picker.is_none());
+    assert_eq!(app.workspace.count(), 2, "the command should have run");
+}
+
+#[test]
+fn a_palette_entry_that_needs_an_argument_opens_the_command_line() {
+    let mut app = app_with("text\n");
+    press(&mut app, "<C-k>");
+    press(&mut app, "Search project");
+    press(&mut app, "<CR>");
+    assert!(app.picker.is_none());
+    // Prefilled rather than run, because it needs a pattern.
+    assert_eq!(app.mode, Mode::Command);
+    assert_eq!(app.prompt.as_ref().unwrap().input, "grep ");
+}
+
+#[test]
+fn picker_navigation_wraps_and_escape_closes() {
+    let mut app = app_with("text\n");
+    press(&mut app, "<C-k>");
+    let total = app.picker.as_ref().unwrap().matches().len();
+    assert!(total > 2);
+
+    press(&mut app, "<C-n>");
+    assert_eq!(app.picker.as_ref().unwrap().selected, 1);
+    press(&mut app, "<C-p><C-p>");
+    assert_eq!(
+        app.picker.as_ref().unwrap().selected,
+        total - 1,
+        "should wrap to the end"
+    );
+
+    press(&mut app, "<Esc>");
+    assert!(app.picker.is_none());
+}
+
+#[test]
+fn backspacing_out_of_an_empty_picker_closes_it() {
+    let mut app = app_with("text\n");
+    press(&mut app, "<C-k>");
+    press(&mut app, "ab");
+    assert_eq!(app.picker.as_ref().unwrap().input, "ab");
+    press(&mut app, "<BS><BS>");
+    assert!(app.picker.is_some(), "still open with an empty query");
+    press(&mut app, "<BS>");
+    assert!(app.picker.is_none());
+}
+
+#[test]
+fn a_picker_keeps_the_keyboard_away_from_the_buffer() {
+    let mut app = app_with("untouched\n");
+    press(&mut app, "<C-k>");
+    // These would be destructive in normal mode.
+    press(&mut app, "dd");
+    press(&mut app, "x");
+    assert_eq!(content(&app), "untouched\n");
+    assert!(app.picker.is_some());
+}
+
+// -- auto-pairs and completion ----------------------------------------------
+
+#[test]
+fn auto_pairs_close_and_step_over() {
+    let mut app = app_with("");
+    press(&mut app, "icall(");
+    assert_eq!(content(&app), "call()\n");
+    assert_eq!(cursor(&app), (0, 5), "the cursor sits between them");
+
+    // Typing the closer steps over rather than doubling it.
+    press(&mut app, ")");
+    assert_eq!(content(&app), "call()\n");
+    assert_eq!(cursor(&app), (0, 6));
+    press(&mut app, "<Esc>");
+}
+
+#[test]
+fn auto_pairs_can_be_turned_off() {
+    let mut app = app_with("");
+    app.config.editor.auto_pairs = false;
+    press(&mut app, "icall(<Esc>");
+    assert_eq!(content(&app), "call(\n");
+}
+
+#[test]
+fn backspace_removes_an_empty_pair_as_a_unit() {
+    let mut app = app_with("");
+    press(&mut app, "if(");
+    assert_eq!(content(&app), "f()\n");
+    press(&mut app, "<BS>");
+    assert_eq!(content(&app), "f\n");
+    press(&mut app, "<Esc>");
+}
+
+#[test]
+fn enter_between_a_pair_opens_the_block() {
+    let mut app = app_with("");
+    press(&mut app, "ifn f() {");
+    assert_eq!(content(&app), "fn f() {}\n");
+    press(&mut app, "<CR>");
+    assert_eq!(content(&app), "fn f() {\n    \n}\n");
+    assert_eq!(cursor(&app), (1, 4), "on the indented middle line");
+    press(&mut app, "<Esc>");
+}
+
+#[test]
+fn completion_offers_words_from_the_buffer_and_accepts_with_tab() {
+    let mut app = app_with("let calculation = 1;\n");
+    press(&mut app, "Go");
+    press(&mut app, "calc");
+    let completion = app.completion.as_ref().expect("suggestions");
+    assert!(
+        completion.items.contains(&"calculation".to_string()),
+        "{:?}",
+        completion.items
+    );
+
+    press(&mut app, "<Tab>");
+    assert!(content(&app).contains("calculation\n"));
+    assert!(app.completion.is_none(), "accepting closes the list");
+    press(&mut app, "<Esc>");
+}
+
+#[test]
+fn ctrl_n_offers_suggestions_even_below_the_automatic_threshold() {
+    let mut app = app_with("alphabetical\n");
+    app.config.editor.auto_complete = false;
+    press(&mut app, "Go");
+    press(&mut app, "a");
+    assert!(app.completion.is_none(), "automatic completion is off");
+    press(&mut app, "<C-n>");
+    let completion = app.completion.as_ref().expect("suggestions on request");
+    assert!(completion.items.contains(&"alphabetical".to_string()));
+    press(&mut app, "<C-y>");
+    assert!(content(&app).contains("alphabetical"));
+    press(&mut app, "<Esc>");
+}
+
+#[test]
+fn escape_always_leaves_insert_mode_even_with_the_list_open() {
+    // A popup must never take Esc away from the modal contract.
+    let mut app = app_with("alphabetical\n");
+    press(&mut app, "Go");
+    press(&mut app, "alp");
+    assert!(app.completion.is_some());
+    press(&mut app, "<Esc>");
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.completion.is_none());
+}
+
+#[test]
+fn ctrl_e_dismisses_the_list_without_leaving_insert_mode() {
+    let mut app = app_with("alphabetical\n");
+    press(&mut app, "Go");
+    press(&mut app, "alp");
+    assert!(app.completion.is_some());
+    press(&mut app, "<C-e>");
+    assert!(app.completion.is_none());
+    assert_eq!(app.mode, Mode::Insert);
+    press(&mut app, "<Esc>");
+}
+
+// -- the file explorer ------------------------------------------------------
+
+#[test]
+fn the_explorer_lists_directories_first_and_expands_on_demand() {
+    use crate::view::explorer::Explorer;
+    let directory = scratch_dir("explorer");
+    std::fs::create_dir(directory.join("src")).unwrap();
+    std::fs::write(directory.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(directory.join("README.md"), "# hi\n").unwrap();
+
+    let mut explorer = Explorer::new(directory.clone(), false);
+    let names: Vec<&str> = explorer
+        .entries()
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["src", "README.md"], "directories first");
+    assert!(explorer.entries()[0].is_dir);
+
+    // Expanding reveals the children, indented.
+    assert!(explorer.activate().is_none(), "a directory does not open");
+    let entries = explorer.entries();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[1].name, "main.rs");
+    assert_eq!(entries[1].depth, 1);
+
+    // Selecting a file hands back its path.
+    explorer.selected = 1;
+    let chosen = explorer.activate().expect("a file opens");
+    assert!(chosen.ends_with("main.rs"));
+
+    // Collapsing hides them again.
+    explorer.selected = 0;
+    explorer.collapse();
+    assert_eq!(explorer.entries().len(), 2);
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn the_explorer_hides_what_git_ignores_unless_asked() {
+    use crate::view::explorer::Explorer;
+    let directory = scratch_dir("explorer-ignore");
+    std::fs::write(directory.join(".gitignore"), "target\n").unwrap();
+    std::fs::create_dir(directory.join("target")).unwrap();
+    std::fs::write(directory.join("keep.txt"), "\n").unwrap();
+
+    let hidden = Explorer::new(directory.clone(), false);
+    let names: Vec<&str> = hidden.entries().iter().map(|e| e.name.as_str()).collect();
+    assert!(!names.contains(&"target"), "{names:?}");
+    assert!(names.contains(&"keep.txt"));
+    // Dotfiles are not hidden: `.github` and `.gitlab-ci.yml` are the point.
+    assert!(names.contains(&".gitignore"), "{names:?}");
+
+    let shown = Explorer::new(directory.clone(), true);
+    let names: Vec<&str> = shown.entries().iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"target"), "{names:?}");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn the_sidebar_does_not_swallow_the_global_keys() {
+    // Standing in the file tree must not stop you opening the command line or
+    // the picker.
+    let mut app = app_with("text\n");
+    press(&mut app, "<C-w>e");
+    assert!(app.sidebar_focused());
+
+    press(&mut app, "<C-p>");
+    assert!(app.picker.is_some(), "Ctrl-P should still work");
+    assert!(!app.sidebar_focused(), "and focus should leave the sidebar");
+    press(&mut app, "<Esc>");
+
+    press(&mut app, "<C-w>E");
+    assert!(app.sidebar_focused());
+    press(&mut app, ":");
+    assert_eq!(app.mode, Mode::Command, "`:` should open the command line");
+    press(&mut app, "<Esc>");
+
+    press(&mut app, "<C-w>E");
+    press(&mut app, "<C-k>");
+    assert!(app.picker.is_some(), "Ctrl-K should still work");
+}
+
 // -- diagnostics, formatting and signs --------------------------------------
 
 fn scratch_dir(label: &str) -> std::path::PathBuf {
@@ -739,10 +1146,10 @@ fn fake_checker(directory: &std::path::Path, body: &str) -> std::path::PathBuf {
     script
 }
 
-fn inject_diagnostics(app: &mut App, lines: &[(usize, crate::diagnostics::Severity)]) {
+fn inject_diagnostics(app: &mut App, lines: &[(usize, crate::tools::diagnostics::Severity)]) {
     let items = lines
         .iter()
-        .map(|(line, severity)| crate::diagnostics::Diagnostic {
+        .map(|(line, severity)| crate::tools::diagnostics::Diagnostic {
             line: *line,
             col: None,
             severity: *severity,
@@ -776,7 +1183,7 @@ four",
     let before = cursor(&app);
 
     // Only the second line differs.
-    crate::format::apply(
+    crate::tools::format::apply(
         &mut app,
         "one
 two
@@ -820,7 +1227,7 @@ c",
     );
     press(&mut app, "G");
     assert_eq!(cursor(&app), (2, 0));
-    crate::format::apply(
+    crate::tools::format::apply(
         &mut app,
         "a
 b
@@ -973,7 +1380,7 @@ c
 
 #[test]
 fn diagnostic_navigation_visits_each_one_and_wraps() {
-    use crate::diagnostics::Severity;
+    use crate::tools::diagnostics::Severity;
     let mut app = app_with(
         "1
 2
@@ -1015,7 +1422,7 @@ fn diagnostic_navigation_says_so_when_there_are_none() {
 
 #[test]
 fn hunk_navigation_walks_the_changes_against_head() {
-    use crate::vcs::LineStatus;
+    use crate::tools::vcs::LineStatus;
     let mut app = app_with(
         "1
 2
@@ -1053,16 +1460,11 @@ fn hunk_navigation_says_so_when_the_file_matches_head() {
 }
 
 #[test]
-fn the_diagnostic_list_shows_everything_with_a_summary() {
-    use crate::diagnostics::Severity;
-    let mut app = app_with(
-        "1
-2
-3
-4",
-    );
+fn the_diagnostic_list_opens_a_picker_you_can_jump_from() {
+    use crate::tools::diagnostics::Severity;
+    let mut app = app_with("1\n2\n3\n4");
     press(&mut app, ":diag<CR>");
-    assert!(app.overlay.is_none());
+    assert!(app.picker.is_none());
     assert!(app
         .message
         .as_ref()
@@ -1072,12 +1474,15 @@ fn the_diagnostic_list_shows_everything_with_a_summary() {
 
     inject_diagnostics(&mut app, &[(0, Severity::Error), (3, Severity::Warning)]);
     press(&mut app, ":diag<CR>");
-    let overlay = app.overlay.as_ref().expect("an overlay");
-    assert!(overlay.title.contains("1 error(s)"), "{}", overlay.title);
-    assert!(overlay.title.contains("1 warning(s)"), "{}", overlay.title);
-    assert_eq!(overlay.lines.len(), 2);
-    assert!(overlay.lines[0].contains("error"));
-    assert!(overlay.lines[1].contains("warning"));
+    let picker = app.picker.as_ref().expect("a picker");
+    assert_eq!(picker.total(), 2);
+    assert!(picker.item(0).unwrap().detail.contains("error"));
+    assert!(picker.item(1).unwrap().detail.contains("warning"));
+
+    // Selecting the second one jumps there.
+    press(&mut app, "<Down><CR>");
+    assert!(app.picker.is_none());
+    assert_eq!(cursor(&app), (3, 0));
 }
 
 #[test]
@@ -1102,7 +1507,7 @@ fn the_sign_column_takes_room_only_when_it_is_on() {
 
 #[test]
 fn set_toggles_the_new_features_at_runtime() {
-    use crate::diagnostics::Severity;
+    use crate::tools::diagnostics::Severity;
     let mut app = app_with(
         "a
 ",
@@ -1160,12 +1565,15 @@ fn a_configured_checker_runs_and_its_findings_reach_the_buffer() {
     assert_eq!(found.len(), 2, "got {found:?}");
     assert_eq!(found[0].line, 1);
     assert_eq!(found[0].col, Some(4));
-    assert_eq!(found[0].severity, crate::diagnostics::Severity::Error);
+    assert_eq!(
+        found[0].severity,
+        crate::tools::diagnostics::Severity::Error
+    );
     assert_eq!(found[0].message, "deliberately broken");
     assert_eq!(found[0].source, "fake");
     assert_eq!(
         app.buffer().diagnostics.worst_on_line(1),
-        Some(crate::diagnostics::Severity::Error)
+        Some(crate::tools::diagnostics::Severity::Error)
     );
 
     // And navigation reaches them, column included.
@@ -1514,9 +1922,11 @@ fn the_documented_example_configuration_is_valid() {
 #[test]
 fn the_default_tooling_settings_are_unsurprising() {
     let config = crate::config::Config::default();
-    // Reading a file should not run a formatter over it.
-    assert!(!config.format.on_save);
-    // Nor should saving silently rewrite bytes you did not touch.
+    // Formatting on save is on by default, so a save rewrites the file
+    // whenever a formatter matches its type.
+    assert!(config.format.on_save);
+    // Whitespace trimming stays opt-in: unlike a formatter, it is not tied to
+    // a filetype, so it would touch every file you save.
     assert!(!config.editor.trim_trailing_whitespace);
     assert!(!config.editor.ensure_final_newline);
     // Checking on save is useful and cheap; checking on every keystroke is not.

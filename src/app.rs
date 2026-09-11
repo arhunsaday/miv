@@ -1,16 +1,19 @@
 //! Editor state and the editing actions the key layer drives.
 
-use crate::buffer::Buffer;
 use crate::config::{Config, LineNumbers};
+use crate::core::buffer::Buffer;
+use crate::core::search::Search;
+use crate::core::text::{self, Position};
+use crate::edit::motion::{EditRange, FindTarget};
+use crate::edit::operator::EditOptions;
+use crate::edit::register::{RegisterContent, RegisterKind, Registers};
 use crate::keymap::Pending;
 use crate::mode::{Mode, VisualKind};
-use crate::motion::{EditRange, FindTarget};
-use crate::operator::EditOptions;
-use crate::register::{RegisterContent, RegisterKind, Registers};
-use crate::search::Search;
 use crate::session::{RemoteCursor, Session};
 use crate::syntax::SyntaxEngine;
-use crate::text::{self, Position};
+use crate::view::layout::{Direction, WindowId};
+use crate::view::picker::{Action, Item, Picker, Source};
+use crate::view::window::Workspace;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 use std::collections::{HashSet, VecDeque};
@@ -140,10 +143,16 @@ pub struct App {
     /// Guest count when sharing, for the status line. Kept separately because
     /// the session itself is checked out while frames are drawn.
     pub shared_guests: Option<usize>,
+    /// This person's windows and how they are arranged.
+    pub workspace: Workspace,
+    /// The filterable list on top of everything, when one is open.
+    pub picker: Option<Picker>,
+    /// Suggestions for the word being typed.
+    pub completion: Option<crate::edit::complete::Completion>,
     /// Background external tools.
-    pub runner: crate::external::Runner,
-    pub checkers: Vec<crate::diagnostics::Checker>,
-    pub formatters: Vec<crate::format::Formatter>,
+    pub runner: crate::tools::external::Runner,
+    pub checkers: Vec<crate::tools::diagnostics::Checker>,
+    pub formatters: Vec<crate::tools::format::Formatter>,
     /// When the buffer last changed, so background work waits for a pause in
     /// typing rather than running on every keystroke.
     last_change: Option<Instant>,
@@ -170,6 +179,7 @@ impl App {
         };
         let bad_theme = engine.theme(&config.appearance.theme).is_none();
 
+        let workspace = Workspace::new(0, &config.sidebar);
         let mut app = Self {
             buffers: Vec::new(),
             current: 0,
@@ -199,7 +209,10 @@ impl App {
             remote_cursors: Vec::new(),
             rendering_as: crate::session::HOST_ID,
             shared_guests: None,
-            runner: crate::external::Runner::default(),
+            workspace,
+            picker: None,
+            completion: None,
+            runner: crate::tools::external::Runner::default(),
             checkers: Vec::new(),
             formatters: Vec::new(),
             last_change: None,
@@ -266,12 +279,12 @@ impl App {
 
         let mut checker_configs = self.config.diagnostics.checker.clone();
         if self.config.diagnostics.use_builtin {
-            checker_configs.extend(crate::diagnostics::builtin_checkers());
+            checker_configs.extend(crate::tools::diagnostics::builtin_checkers());
         }
         self.checkers = checker_configs
             .iter()
             .filter_map(
-                |config| match crate::diagnostics::Checker::compile(config) {
+                |config| match crate::tools::diagnostics::Checker::compile(config) {
                     Ok(checker) => Some(checker),
                     Err(e) => {
                         problems.push(e);
@@ -283,17 +296,19 @@ impl App {
 
         let mut formatter_configs = self.config.format.formatter.clone();
         if self.config.format.use_builtin {
-            formatter_configs.extend(crate::format::builtin_formatters());
+            formatter_configs.extend(crate::tools::format::builtin_formatters());
         }
         self.formatters = formatter_configs
             .iter()
-            .filter_map(|config| match crate::format::Formatter::compile(config) {
-                Ok(formatter) => Some(formatter),
-                Err(e) => {
-                    problems.push(e);
-                    None
-                }
-            })
+            .filter_map(
+                |config| match crate::tools::format::Formatter::compile(config) {
+                    Ok(formatter) => Some(formatter),
+                    Err(e) => {
+                        problems.push(e);
+                        None
+                    }
+                },
+            )
             .collect();
 
         if let Some(first) = problems.first() {
@@ -341,7 +356,7 @@ impl App {
             };
         let force = trigger == Trigger::Manual;
 
-        let snapshot = crate::external::Snapshot {
+        let snapshot = crate::tools::external::Snapshot {
             buffer_id: id,
             revision,
             name,
@@ -352,7 +367,7 @@ impl App {
 
         if check && (force || self.buffers[index].checked_revision != Some(revision)) {
             self.buffers[index].checked_revision = Some(revision);
-            let applicable: Vec<crate::diagnostics::Checker> = self
+            let applicable: Vec<crate::tools::diagnostics::Checker> = self
                 .checkers
                 .iter()
                 .filter(|checker| checker.applies_to(&syntax_name, path.as_deref()))
@@ -397,7 +412,71 @@ impl App {
         let mut changed = false;
         for item in finished {
             match item {
-                crate::external::Finished::Checked {
+                crate::tools::external::Finished::Listed { files, truncated } => {
+                    let Some(picker) = self.picker.as_mut() else {
+                        continue;
+                    };
+                    if picker.source != Source::Files {
+                        continue;
+                    }
+                    let items = files
+                        .into_iter()
+                        .map(|file| {
+                            let name = std::path::Path::new(&file)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            Item::new(
+                                file.clone(),
+                                name,
+                                Action::OpenFile(std::path::PathBuf::from(file)),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let count = items.len();
+                    picker.set_items(items);
+                    picker.title = if truncated {
+                        format!("Files ({count}, truncated)")
+                    } else {
+                        format!("Files ({count})")
+                    };
+                    changed = true;
+                }
+                crate::tools::external::Finished::Grepped { pattern, result } => {
+                    let Some(picker) = self.picker.as_mut() else {
+                        continue;
+                    };
+                    if picker.source != Source::Grep {
+                        continue;
+                    }
+                    match result {
+                        Ok(matches) => {
+                            let count = matches.len();
+                            let items = matches
+                                .into_iter()
+                                .map(|hit| {
+                                    Item::new(
+                                        format!("{}:{}: {}", hit.path, hit.line + 1, hit.text),
+                                        String::new(),
+                                        Action::Goto {
+                                            path: Some(std::path::PathBuf::from(hit.path)),
+                                            line: hit.line,
+                                            col: hit.col,
+                                        },
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            picker.set_items(items);
+                            picker.title = format!("{count} match(es) for {pattern:?}");
+                        }
+                        Err(e) => {
+                            picker.loading = false;
+                            picker.title = format!("search failed: {e}");
+                        }
+                    }
+                    changed = true;
+                }
+                crate::tools::external::Finished::Checked {
                     buffer_id,
                     revision,
                     tool,
@@ -429,7 +508,7 @@ impl App {
                         }
                     }
                 }
-                crate::external::Finished::Diffed {
+                crate::tools::external::Finished::Diffed {
                     buffer_id,
                     revision,
                     result,
@@ -477,6 +556,372 @@ impl App {
             self.clamp_cursor();
         }
         trimmed
+    }
+
+    // -- windows ------------------------------------------------------------
+    //
+    // The focused window's cursor and viewport live on the buffer, so the rest
+    // of the editor never has to know about windows. These three move state
+    // between the two representations, and every focus change goes through
+    // them.
+
+    /// Write the live cursor and viewport into the focused window.
+    pub fn sync_window(&mut self) {
+        let buffer_index = self.current;
+        let anchor = self.visual_anchor;
+        let (cursor, desired_col, view_top, view_left) = {
+            let buffer = self.buffer();
+            (
+                buffer.cursor,
+                buffer.desired_col,
+                buffer.view_top,
+                buffer.view_left,
+            )
+        };
+        let window = self.workspace.focused_mut();
+        window.buffer_index = buffer_index;
+        window.cursor = cursor;
+        window.desired_col = desired_col;
+        window.view_top = view_top;
+        window.view_left = view_left;
+        window.visual_anchor = anchor;
+    }
+
+    /// Make the focused window's state live.
+    pub fn load_window(&mut self) {
+        let window = self.workspace.focused().clone();
+        self.current = window
+            .buffer_index
+            .min(self.buffers.len().saturating_sub(1));
+        self.visual_anchor = window.visual_anchor;
+        let buffer = self.buffer_mut();
+        buffer.cursor = window.cursor;
+        buffer.desired_col = window.desired_col;
+        buffer.view_top = window.view_top;
+        buffer.view_left = window.view_left;
+        self.clamp_cursor();
+    }
+
+    pub fn focus_window(&mut self, id: WindowId) {
+        if id == self.workspace.focused_id() {
+            return;
+        }
+        self.sync_window();
+        if self.workspace.focus(id) {
+            self.load_window();
+        }
+    }
+
+    pub fn focus_next_window(&mut self, forward: bool) {
+        let target = if forward {
+            self.workspace.next()
+        } else {
+            self.workspace.previous()
+        };
+        self.focus_window(target);
+    }
+
+    pub fn focus_toward(&mut self, direction: Direction) {
+        match self.workspace.toward(direction) {
+            Some(id) => self.focus_window(id),
+            None => self.set_error("no window that way"),
+        }
+    }
+
+    /// `:split` and `:vsplit`. The new window shows the same place in the same
+    /// buffer, as Vim does, so a split is a second view rather than a jump.
+    pub fn split_window(&mut self, vertical: bool) {
+        self.sync_window();
+        let new = self.workspace.split(vertical);
+        self.workspace.focus(new);
+        self.load_window();
+    }
+
+    pub fn close_window(&mut self) -> bool {
+        self.sync_window();
+        if self.workspace.close_focused() {
+            self.load_window();
+            true
+        } else {
+            self.set_error("cannot close the last window");
+            false
+        }
+    }
+
+    // -- sidebar ------------------------------------------------------------
+
+    pub fn toggle_sidebar(&mut self) {
+        self.workspace.sidebar.toggle();
+    }
+
+    /// Move the keyboard between the sidebar and the windows.
+    pub fn focus_sidebar(&mut self, focused: bool) {
+        let sidebar = &mut self.workspace.sidebar;
+        if focused && !sidebar.visible {
+            sidebar.visible = true;
+            sidebar.explorer.refresh();
+        }
+        sidebar.focused = focused && sidebar.visible;
+    }
+
+    pub fn sidebar_focused(&self) -> bool {
+        let sidebar = &self.workspace.sidebar;
+        sidebar.visible && sidebar.focused
+    }
+
+    /// Open whatever the explorer has selected, and hand the keyboard back to
+    /// the window so you can start editing.
+    pub fn explorer_activate(&mut self) {
+        let chosen = self.workspace.sidebar.explorer.activate();
+        if let Some(path) = chosen {
+            match self.open_file(&path) {
+                Ok(()) => {
+                    self.focus_sidebar(false);
+                    self.sync_window();
+                }
+                Err(e) => self.set_error(format!("{e}")),
+            }
+        }
+    }
+
+    pub fn only_window(&mut self) {
+        self.sync_window();
+        if !self.workspace.only() {
+            self.set_message("already the only window");
+        }
+    }
+
+    // -- completion ---------------------------------------------------------
+
+    /// Recompute the suggestion list for the word under the cursor.
+    ///
+    /// `forced` is Ctrl-N: it offers suggestions however little has been
+    /// typed, where the automatic path waits for `complete_min_chars`.
+    pub fn update_completion(&mut self, forced: bool) {
+        use crate::edit::complete;
+
+        if !forced && !self.config.editor.auto_complete {
+            self.completion = None;
+            return;
+        }
+        let cursor = self.buffer().cursor;
+        let (prefix, start) = complete::prefix_at(&self.buffer().rope, cursor);
+        let minimum = if forced {
+            complete::MIN_PREFIX
+        } else {
+            self.config
+                .editor
+                .complete_min_chars
+                .max(complete::MIN_PREFIX)
+        };
+        if prefix.chars().count() < minimum {
+            self.completion = None;
+            return;
+        }
+
+        let current = self.current;
+        let syntax_name = self.buffer().syntax_name.clone();
+        let ropes: Vec<(&ropey::Rope, bool)> = self
+            .buffers
+            .iter()
+            .enumerate()
+            .map(|(index, buffer)| (&buffer.rope, index == current))
+            .collect();
+        let items = complete::candidates(&ropes, cursor.line, &syntax_name, &prefix);
+
+        self.completion = if items.is_empty() {
+            None
+        } else {
+            Some(complete::Completion {
+                items,
+                selected: 0,
+                start,
+                prefix,
+            })
+        };
+    }
+
+    /// Keep an open list in step with what is being typed, without opening one.
+    fn refresh_completion(&mut self) {
+        if self.completion.is_some() || self.config.editor.auto_complete {
+            self.update_completion(false);
+        }
+    }
+
+    pub fn move_completion(&mut self, delta: isize) {
+        if self.completion.is_none() {
+            self.update_completion(true);
+            return;
+        }
+        if let Some(completion) = self.completion.as_mut() {
+            completion.move_selection(delta);
+        }
+    }
+
+    /// Replace the typed prefix with the highlighted suggestion.
+    pub fn accept_completion(&mut self) -> bool {
+        let Some(completion) = self.completion.take() else {
+            return false;
+        };
+        let Some(word) = completion.selection().map(str::to_string) else {
+            return false;
+        };
+        if word == completion.prefix {
+            return false;
+        }
+        self.dot.changed = true;
+        let start = text::pos_to_char(&self.buffer().rope, completion.start);
+        let end = self.buffer().cursor_char();
+        let buffer = self.buffer_mut();
+        buffer.begin();
+        buffer.replace(start, end, &word);
+        buffer.end();
+        buffer.cursor = text::char_to_pos(&buffer.rope, start + word.chars().count());
+        buffer.desired_col = buffer.cursor.col;
+        true
+    }
+
+    // -- pickers ------------------------------------------------------------
+
+    pub fn close_picker(&mut self) {
+        self.picker = None;
+    }
+
+    fn project_root(&self) -> PathBuf {
+        // The file's directory is a better guess than the process's, but the
+        // process's is the right answer when nothing is open yet.
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    pub fn open_file_picker(&mut self) {
+        let mut picker = Picker::new("Files", Source::Files);
+        picker.loading = true;
+        picker.title = "Files (listing…)".to_string();
+        self.picker = Some(picker);
+        let root = self.project_root();
+        let limit = self.config.picker.max_files;
+        self.runner.list_files(root, limit);
+    }
+
+    pub fn open_buffer_picker(&mut self) {
+        let current = self.current;
+        let items: Vec<Item> = self
+            .buffers
+            .iter()
+            .enumerate()
+            .map(|(index, buffer)| {
+                let mut detail = String::new();
+                if index == current {
+                    detail.push_str("current ");
+                }
+                if buffer.is_modified() {
+                    detail.push_str("modified");
+                }
+                Item::new(buffer.display_name(), detail, Action::Buffer(index))
+            })
+            .collect();
+        self.picker = Some(Picker::with_items(
+            format!("Buffers ({})", items.len()),
+            Source::Buffers,
+            items,
+        ));
+    }
+
+    pub fn open_command_palette(&mut self) {
+        let items: Vec<Item> = crate::command::COMMANDS
+            .iter()
+            .map(|spec| {
+                let action = if spec.run.ends_with(' ') || spec.run.ends_with('/') {
+                    Action::Prompt(spec.run.to_string())
+                } else {
+                    Action::Ex(spec.run.to_string())
+                };
+                Item::new(
+                    spec.name,
+                    format!("{}  ·  :{}", spec.description, spec.run.trim_end()),
+                    action,
+                )
+            })
+            .collect();
+        self.picker = Some(Picker::with_items("Commands", Source::Commands, items));
+    }
+
+    pub fn open_grep_picker(&mut self, pattern: &str) {
+        let mut picker = Picker::new(format!("Searching for {pattern:?}…"), Source::Grep);
+        picker.loading = true;
+        self.picker = Some(picker);
+        let command = self.config.picker.grep_command.clone();
+        let root = self.project_root();
+        let timeout = Duration::from_millis(self.config.picker.timeout_ms);
+        self.runner
+            .grep(command, pattern.to_string(), root, timeout);
+    }
+
+    pub fn open_diagnostics_picker(&mut self) {
+        let items: Vec<Item> = self
+            .buffer()
+            .diagnostics
+            .sorted()
+            .iter()
+            .map(|diagnostic| {
+                Item::new(
+                    format!("{}: {}", diagnostic.line + 1, diagnostic.message),
+                    format!("{} {}", diagnostic.severity.label(), diagnostic.source),
+                    Action::Goto {
+                        path: None,
+                        line: diagnostic.line,
+                        col: diagnostic.col.unwrap_or(0),
+                    },
+                )
+            })
+            .collect();
+        if self.buffer().diagnostics.is_empty() {
+            self.set_message("no diagnostics");
+            return;
+        }
+        self.picker = Some(Picker::with_items(
+            format!("Diagnostics ({})", items.len()),
+            Source::Diagnostics,
+            items,
+        ));
+    }
+
+    /// Run whatever the highlighted item does.
+    pub fn accept_picker(&mut self) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let Some(action) = picker.selection().map(|item| item.action.clone()) else {
+            // Nothing matched, so there is nothing to accept.
+            return;
+        };
+        self.picker = None;
+
+        match action {
+            Action::OpenFile(path) => {
+                if let Err(e) = self.open_file(&path) {
+                    self.set_error(format!("{e}"));
+                }
+            }
+            Action::Goto { path, line, col } => {
+                if let Some(path) = path {
+                    if let Err(e) = self.open_file(&path) {
+                        self.set_error(format!("{e}"));
+                        return;
+                    }
+                }
+                crate::keymap::push_jump(self);
+                self.set_cursor(Position::new(line, col));
+            }
+            Action::Ex(command) => crate::command::execute(self, &command),
+            Action::Prompt(prefill) => {
+                crate::command::open_prompt(self, PromptKind::Command, &prefill)
+            }
+            Action::Buffer(index) => {
+                self.switch_to(index);
+                self.sync_window();
+            }
+        }
     }
 
     pub fn edit_options(&self) -> EditOptions {
@@ -659,8 +1104,12 @@ impl App {
             self.detect_syntax(0);
             return;
         }
-        self.buffers.remove(self.current);
-        self.current = self.current.min(self.buffers.len() - 1);
+        let removed = self.current;
+        self.buffers.remove(removed);
+        self.current = removed.min(self.buffers.len() - 1);
+        let fallback = self.current;
+        self.workspace.buffer_removed(removed, fallback);
+        self.sync_window();
     }
 
     pub fn modified_buffers(&self) -> Vec<&Buffer> {
@@ -700,6 +1149,7 @@ impl App {
     }
 
     pub fn leave_insert(&mut self) {
+        self.completion = None;
         let buffer = self.buffer_mut();
         buffer.end();
         buffer.cursor.col = buffer.cursor.col.saturating_sub(1);
@@ -739,12 +1189,45 @@ impl App {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        use crate::edit::pairs::{self, Insertion};
+
+        if self.config.editor.auto_pairs {
+            let (rope, cursor) = {
+                let buffer = self.buffer();
+                (&buffer.rope, buffer.cursor)
+            };
+            match pairs::on_insert(rope, cursor, c) {
+                Insertion::StepOver => {
+                    let buffer = self.buffer_mut();
+                    buffer.cursor.col += 1;
+                    buffer.desired_col = buffer.cursor.col;
+                    self.refresh_completion();
+                    return;
+                }
+                Insertion::Surround(close) => {
+                    self.dot.changed = true;
+                    let at = self.buffer().cursor_char();
+                    let buffer = self.buffer_mut();
+                    buffer.begin();
+                    buffer.insert(at, &format!("{c}{close}"));
+                    buffer.end();
+                    // Between the two, which is the point.
+                    buffer.cursor.col += 1;
+                    buffer.desired_col = buffer.cursor.col;
+                    self.refresh_completion();
+                    return;
+                }
+                Insertion::Plain => {}
+            }
+        }
+
         self.dot.changed = true;
         let at = self.buffer().cursor_char();
         let buffer = self.buffer_mut();
         buffer.insert(at, &c.to_string());
         buffer.cursor.col += 1;
         buffer.desired_col = buffer.cursor.col;
+        self.refresh_completion();
     }
 
     pub fn insert_text(&mut self, content: &str) {
@@ -762,9 +1245,31 @@ impl App {
 
     /// Newline in insert mode, carrying the current line's indentation.
     pub fn insert_newline(&mut self) {
+        self.completion = None;
         self.dot.changed = true;
         let line = self.buffer().cursor.line;
         let indent = self.indent_of(line);
+
+        // Enter between a bracket and its partner opens the block out, which
+        // is the half of auto-pairs people actually notice.
+        if self.config.editor.auto_pairs
+            && crate::edit::pairs::splits_block(&self.buffer().rope, self.buffer().cursor)
+        {
+            let step = if self.config.editor.expand_tab {
+                " ".repeat(self.config.editor.shift_width)
+            } else {
+                "\t".to_string()
+            };
+            let inner = format!("{indent}{step}");
+            let at = self.buffer().cursor_char();
+            let buffer = self.buffer_mut();
+            buffer.begin();
+            buffer.insert(at, &format!("\n{inner}\n{indent}"));
+            buffer.end();
+            buffer.cursor = Position::new(line + 1, inner.chars().count());
+            buffer.desired_col = buffer.cursor.col;
+            return;
+        }
         let at = self.buffer().cursor_char();
         let buffer = self.buffer_mut();
         buffer.insert(at, &format!("\n{indent}"));
@@ -793,6 +1298,23 @@ impl App {
     /// Backspace in insert mode: unindent, delete a character, or join lines.
     pub fn insert_backspace(&mut self) {
         let cursor = self.buffer().cursor;
+
+        // An empty pair goes as a unit, so undoing a bracket you did not want
+        // is one keystroke rather than two.
+        if self.config.editor.auto_pairs
+            && crate::edit::pairs::deletes_pair(&self.buffer().rope, cursor)
+        {
+            self.dot.changed = true;
+            let at = self.buffer().cursor_char();
+            let buffer = self.buffer_mut();
+            buffer.begin();
+            buffer.remove(at - 1, at + 1);
+            buffer.end();
+            buffer.cursor.col -= 1;
+            buffer.desired_col = buffer.cursor.col;
+            self.completion = None;
+            return;
+        }
         if cursor.col == 0 {
             if cursor.line == 0 {
                 return;
@@ -834,6 +1356,7 @@ impl App {
         buffer.remove(at - count, at);
         buffer.cursor.col -= count;
         buffer.desired_col = buffer.cursor.col;
+        self.refresh_completion();
     }
 
     pub fn insert_delete_forward(&mut self) {
@@ -852,7 +1375,7 @@ impl App {
         if at == 0 {
             return;
         }
-        let start = crate::motion::prev_word_start(&self.buffer().rope, at, false);
+        let start = crate::edit::motion::prev_word_start(&self.buffer().rope, at, false);
         if start >= at {
             return;
         }

@@ -4,7 +4,7 @@
 //! grouping and `\v` magic are not translated. Matching is per line, so a
 //! pattern cannot span a newline.
 
-use crate::text::{self, Position};
+use crate::core::text::{self, Position};
 use regex::{Regex, RegexBuilder};
 use ropey::Rope;
 

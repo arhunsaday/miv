@@ -1,29 +1,21 @@
 //! miv — a modal terminal text editor.
 
 mod app;
-mod buffer;
 mod command;
 mod config;
-mod diagnostics;
-mod external;
-mod format;
+mod core;
+mod edit;
 mod help;
-mod history;
 mod keymap;
 mod keys;
 mod mode;
-mod motion;
-mod operator;
-mod register;
-mod search;
 mod session;
 mod syntax;
 #[cfg(test)]
 mod tests;
-mod text;
-mod textobject;
+mod tools;
 mod ui;
-mod vcs;
+mod view;
 
 use anyhow::{Context, Result};
 use app::App;

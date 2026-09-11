@@ -1,9 +1,9 @@
 //! The `:` command line and the `/` search prompt.
 
 use crate::app::{App, Overlay, Prompt, PromptKind, Trigger};
+use crate::core::search::Direction;
+use crate::core::text::{self, Position};
 use crate::mode::Mode;
-use crate::search::Direction;
-use crate::text::{self, Position};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use regex::Regex;
 use std::path::PathBuf;
@@ -280,6 +280,167 @@ fn submit_prompt(app: &mut App) {
     app.scroll_to_cursor();
 }
 
+/// One entry in the command palette.
+///
+/// This table is also the seam a plugin system would extend: everything the
+/// palette can run, it runs by name through [`execute`].
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+    /// The ex command to run. When it ends in a space, the palette opens the
+    /// command line prefilled instead of running it, because it needs an
+    /// argument.
+    pub run: &'static str,
+}
+
+pub const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "Write file",
+        description: "save the current buffer",
+        run: "w",
+    },
+    CommandSpec {
+        name: "Write as…",
+        description: "save under a new name",
+        run: "w ",
+    },
+    CommandSpec {
+        name: "Quit",
+        description: "close this window, or the editor",
+        run: "q",
+    },
+    CommandSpec {
+        name: "Quit without saving",
+        description: "discard changes",
+        run: "q!",
+    },
+    CommandSpec {
+        name: "Write and quit",
+        description: "save, then close",
+        run: "wq",
+    },
+    CommandSpec {
+        name: "Write all",
+        description: "save every modified buffer",
+        run: "wa",
+    },
+    CommandSpec {
+        name: "Open file…",
+        description: "edit a path",
+        run: "e ",
+    },
+    CommandSpec {
+        name: "Reload from disk",
+        description: "discard and re-read",
+        run: "e!",
+    },
+    CommandSpec {
+        name: "Find files",
+        description: "fuzzy-find in the project",
+        run: "files",
+    },
+    CommandSpec {
+        name: "Search project…",
+        description: "grep across the project",
+        run: "grep ",
+    },
+    CommandSpec {
+        name: "Switch buffer",
+        description: "pick from the open buffers",
+        run: "buffers",
+    },
+    CommandSpec {
+        name: "Close buffer",
+        description: "remove it from the list",
+        run: "bd",
+    },
+    CommandSpec {
+        name: "Split side by side",
+        description: "a second view, vertically",
+        run: "vsplit",
+    },
+    CommandSpec {
+        name: "Split stacked",
+        description: "a second view, horizontally",
+        run: "split",
+    },
+    CommandSpec {
+        name: "Close window",
+        description: "leave the others open",
+        run: "close",
+    },
+    CommandSpec {
+        name: "Only this window",
+        description: "close every other window",
+        run: "only",
+    },
+    CommandSpec {
+        name: "Toggle file explorer",
+        description: "show or hide the sidebar",
+        run: "explorer",
+    },
+    CommandSpec {
+        name: "Format buffer",
+        description: "run the configured formatter",
+        run: "fmt",
+    },
+    CommandSpec {
+        name: "Run checkers",
+        description: "refresh diagnostics now",
+        run: "check",
+    },
+    CommandSpec {
+        name: "List diagnostics",
+        description: "every problem in this buffer",
+        run: "diag",
+    },
+    CommandSpec {
+        name: "Clear search highlight",
+        description: "stop highlighting matches",
+        run: "noh",
+    },
+    CommandSpec {
+        name: "Substitute…",
+        description: "search and replace",
+        run: "%s/",
+    },
+    CommandSpec {
+        name: "Share this session",
+        description: "let others join",
+        run: "share",
+    },
+    CommandSpec {
+        name: "Session participants",
+        description: "who is connected",
+        run: "who",
+    },
+    CommandSpec {
+        name: "End session",
+        description: "stop sharing",
+        run: "unshare",
+    },
+    CommandSpec {
+        name: "Set option…",
+        description: "change a setting",
+        run: "set ",
+    },
+    CommandSpec {
+        name: "Registers",
+        description: "what is in the registers",
+        run: "reg",
+    },
+    CommandSpec {
+        name: "Marks",
+        description: "where the marks are",
+        run: "marks",
+    },
+    CommandSpec {
+        name: "Help",
+        description: "the key reference",
+        run: "help",
+    },
+];
+
 // -- ex commands ------------------------------------------------------------
 
 struct Parsed {
@@ -327,7 +488,16 @@ pub fn execute(app: &mut App, input: &str) {
         "bp" | "bprev" | "bprevious" => app.cycle_buffer(false),
         "bd" | "bdelete" => app.close_buffer(parsed.bang),
         "b" | "buffer" => switch_buffer(app, &args),
-        "ls" | "buffers" | "files" => show_buffers(app),
+        "ls" | "buffers" => app.open_buffer_picker(),
+        "files" | "find" => app.open_file_picker(),
+        "commands" | "palette" => app.open_command_palette(),
+        "grep" | "rg" | "search" => {
+            if args.is_empty() {
+                app.set_error("usage: :grep <pattern>");
+            } else {
+                app.open_grep_picker(&args);
+            }
+        }
         "reg" | "registers" | "di" | "display" => show_registers(app),
         "marks" => show_marks(app),
         "noh" | "nohl" | "nohlsearch" => app.search_highlight = false,
@@ -347,13 +517,34 @@ pub fn execute(app: &mut App, input: &str) {
         "follow" => crate::session::commands::follow(app, &args),
         "unfollow" => crate::session::commands::follow(app, ""),
         "say" => crate::session::commands::say(app, parsed.args.trim()),
+        "sp" | "split" | "new" => {
+            app.split_window(false);
+            if !args.is_empty() {
+                if let Err(e) = app.open_file(&PathBuf::from(&args)) {
+                    app.set_error(format!("{e}"));
+                }
+            }
+        }
+        "vs" | "vsp" | "vsplit" | "vnew" => {
+            app.split_window(true);
+            if !args.is_empty() {
+                if let Err(e) = app.open_file(&PathBuf::from(&args)) {
+                    app.set_error(format!("{e}"));
+                }
+            }
+        }
+        "clo" | "close" => {
+            app.close_window();
+        }
+        "on" | "only" => app.only_window(),
+        "explorer" | "tree" | "sidebar" => app.toggle_sidebar(),
         "fmt" | "format" => format_buffer(app),
         "check" => {
             let index = app.current;
             app.refresh_buffer(index, Trigger::Manual);
             app.set_message("running checkers…");
         }
-        "diag" | "diagnostics" => show_diagnostics(app),
+        "diag" | "diagnostics" => app.open_diagnostics_picker(),
         "h" | "help" => show_help(app),
         other => app.set_error(format!("E492: Not an editor command: {other}")),
     }
@@ -494,7 +685,7 @@ fn parse_address(app: &App, chars: &[char]) -> Option<(Option<usize>, usize)> {
 }
 
 fn format_buffer(app: &mut App) {
-    match crate::format::format_buffer(app) {
+    match crate::tools::format::format_buffer(app) {
         Ok(Some(formatted)) => app.set_message(format!(
             "{}: {} line(s) changed",
             formatted.tool, formatted.changed_lines
@@ -502,35 +693,6 @@ fn format_buffer(app: &mut App) {
         Ok(None) => app.set_message("already formatted"),
         Err(e) => app.set_error(e),
     }
-}
-
-fn show_diagnostics(app: &mut App) {
-    let buffer = app.buffer();
-    if buffer.diagnostics.is_empty() {
-        app.set_message("no diagnostics");
-        return;
-    }
-    let lines: Vec<String> = buffer
-        .diagnostics
-        .sorted()
-        .iter()
-        .map(|diagnostic| {
-            format!(
-                "  {:>5}:{:<4} {:<8} {:<12} {}",
-                diagnostic.line + 1,
-                diagnostic.col.map(|c| c + 1).unwrap_or(1),
-                diagnostic.severity.label(),
-                diagnostic.source,
-                diagnostic.message
-            )
-        })
-        .collect();
-    let (errors, warnings, infos) = buffer.diagnostics.counts();
-    app.overlay = Some(Overlay {
-        title: format!("Diagnostics — {errors} error(s), {warnings} warning(s), {infos} info — ]d / [d to visit"),
-        lines,
-        scroll: 0,
-    });
 }
 
 fn write_file(app: &mut App, args: &str, _force: bool) -> bool {
@@ -554,7 +716,7 @@ fn write_file(app: &mut App, args: &str, _force: bool) -> bool {
     // stop the save: refusing to write because a tool is unhappy would be a
     // good way to lose work.
     if app.config.format.on_save {
-        if let Err(e) = crate::format::format_buffer(app) {
+        if let Err(e) = crate::tools::format::format_buffer(app) {
             app.set_error(e);
         }
     }
@@ -607,6 +769,12 @@ fn write_all(app: &mut App) {
 /// because with hidden buffers there would otherwise be no warning before
 /// losing them.
 fn quit(app: &mut App, force: bool) {
+    // With the screen split, `:q` closes the window you are in — the editor
+    // itself only closes once the last one goes, which is what Vim does.
+    if app.workspace.count() > 1 {
+        app.close_window();
+        return;
+    }
     if !force {
         let modified: Vec<String> = app
             .modified_buffers()
@@ -637,7 +805,7 @@ fn edit_file(app: &mut App, args: &str, force: bool) {
         }
         let index = app.current;
         let id = app.buffers[index].id;
-        match crate::buffer::Buffer::open(id, &path) {
+        match crate::core::buffer::Buffer::open(id, &path) {
             Ok(buffer) => {
                 app.buffers[index] = buffer;
                 app.detect_syntax(index);
@@ -677,30 +845,6 @@ fn switch_buffer(app: &mut App, args: &str) {
         1 => app.switch_to(matches[0]),
         _ => app.set_error(format!("E93: More than one match for {args}")),
     }
-}
-
-fn show_buffers(app: &mut App) {
-    let current = app.current;
-    let lines: Vec<String> = app
-        .buffers
-        .iter()
-        .enumerate()
-        .map(|(index, buffer)| {
-            format!(
-                "{:>3} {}{}  {:<40} line {}",
-                buffer.id,
-                if index == current { "%" } else { " " },
-                if buffer.is_modified() { "+" } else { " " },
-                buffer.display_name(),
-                buffer.cursor.line + 1
-            )
-        })
-        .collect();
-    app.overlay = Some(Overlay {
-        title: "Buffers".to_string(),
-        lines,
-        scroll: 0,
-    });
 }
 
 fn show_registers(app: &mut App) {

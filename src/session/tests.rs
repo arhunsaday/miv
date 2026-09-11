@@ -9,9 +9,9 @@ use super::protocol::{Access, ClientMessage, ServerMessage};
 use super::{dispatch, render_remote_frames, shift_offset, Session, SessionEvent, HOST_ID};
 use crate::app::App;
 use crate::config::Config;
-use crate::history::Change;
+use crate::core::history::Change;
+use crate::core::text::Position;
 use crate::mode::Mode;
-use crate::text::Position;
 use ropey::Rope;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -38,6 +38,7 @@ fn hosted(content: &str) -> (App, Sender<SessionEvent>) {
         Arc::new(AtomicBool::new(false)),
         Access::Read,
         false,
+        &crate::config::SidebarConfig::default(),
     ));
     super::refresh_remote_cursors(&mut app);
     (app, events_tx)
@@ -95,7 +96,7 @@ fn content(app: &App) -> String {
 fn cursor_of(app: &App, id: u32) -> Position {
     let session = app.session.as_ref().unwrap();
     let index = session.index_of(id).unwrap();
-    session.participants[index].state.cursor
+    session.participants[index].state.cursor()
 }
 
 fn grant(app: &mut App, name: &str) {
@@ -517,8 +518,8 @@ fn following_mirrors_the_other_participants_viewport() {
     let session = app.session.as_ref().unwrap();
     let index = session.index_of(1).unwrap();
     assert_eq!(
-        session.participants[index].state.cursor,
-        session.participants[0].state.cursor
+        session.participants[index].state.cursor(),
+        session.participants[0].state.cursor()
     );
 }
 

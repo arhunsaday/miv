@@ -61,12 +61,16 @@ class Report:
 class Pty:
     """The editor running in a pseudo-terminal, with its screen emulated."""
 
-    def __init__(self, args, cols=COLS, rows=ROWS, ready=True):
+    def __init__(self, args, cols=COLS, rows=ROWS, ready=True, cwd=None):
         self.screen = pyte.Screen(cols, rows)
         self.stream = pyte.ByteStream(self.screen)
         self.raw = bytearray()
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
+            # The project the editor thinks it is in: the picker and the
+            # explorer both work from the working directory.
+            if cwd:
+                os.chdir(cwd)
             os.environ["TERM"] = "xterm-256color"
             # Size the terminal before exec so the editor never sees a stale
             # size, and so a CR written early is not translated to LF by the
@@ -142,6 +146,11 @@ class Pty:
 
     def message(self):
         return self.rows()[-1]
+
+    def picker_closed(self):
+        """True when no picker frame is on screen."""
+        text = self.text()
+        return "Files" not in text and "Commands" not in text
 
     def find(self, pattern):
         import re
