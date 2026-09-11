@@ -24,7 +24,7 @@ scrolloff = 3
 line_numbers = "relative"
 
 # Highlight the line the cursor is on.
-cursorline = true
+cursorline = false
 
 # Case-insensitive search...
 ignore_case = true
@@ -34,6 +34,15 @@ smart_case = true
 
 # Wrap around the end of the file when searching.
 wrap_search = true
+
+# Close brackets and quotes as you open them. A bracket only closes itself
+# when what follows is whitespace, a closing bracket or a separator, so typing
+# `(` in front of a word does not wrap it.
+auto_pairs = true
+
+# Offer completions while you type. Ctrl-N works regardless.
+auto_complete = true
+complete_min_chars = 2
 
 # Strip trailing spaces and tabs from every line when writing.
 trim_trailing_whitespace = false
@@ -132,9 +141,10 @@ use_builtin = true
 # output is applied as a minimal set of line splices, so undo is one step and
 # the cursor keeps its place.
 [format]
-# Format before writing. Off by default: reformatting a file you only meant to
-# save is a surprise.
-on_save = false
+# Format before writing. On by default, so saving a file whose type has a
+# formatter rewrites it — set this to false if you work in repos that disagree
+# with your formatter.
+on_save = true
 timeout_ms = 3000
 
 # Built-ins: rustfmt, gofmt, terraform fmt, shfmt, black and prettier.
@@ -154,3 +164,27 @@ diagnostics = true
 # Lines that differ from git HEAD: ┃ added or changed, ▁ something was deleted
 # just above.
 git = true
+
+# The file explorer strip.
+[sidebar]
+width = 30
+
+# "left" or "right".
+side = "left"
+
+# Show files git ignores. Off by default, or a Rust project's `target` buries
+# everything else. Dotfiles are always shown — `.github` is usually the point.
+show_ignored = false
+
+open_on_start = false
+
+# The fuzzy finder, the command palette and project search.
+[picker]
+# Most files the finder will list; a cap keeps it responsive in a monorepo.
+max_files = 50000
+
+# Project search. `$PATTERN` is replaced with what you typed; anything that
+# prints `path:line:col:text` works, so `git grep -n --column` also fits.
+grep_command = ["rg", "--vimgrep", "--color=never", "--smart-case", "--", "$PATTERN"]
+
+timeout_ms = 10000

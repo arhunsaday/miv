@@ -113,13 +113,20 @@ def run():
     editor.command(":diag")
     listing = editor.text()
     report.check(
-        "':diag' lists everything with a summary",
+        "':diag' lists everything in a picker",
         "image tag must be pinned" in listing
         and "keys are not sorted" in listing
-        and "1 error(s)" in listing,
+        and "Diagnostics" in listing,
         listing,
     )
-    editor.send("\x1b")
+    # And picking one jumps to it.
+    editor.send("\x0e", settle=0.3)
+    editor.send("\r", settle=0.5)
+    report.check(
+        "choosing a diagnostic jumps to its line",
+        " 3:" in editor.status(),
+        editor.status(),
+    )
 
     editor.command(":set nodiagnostics")
     report.check(

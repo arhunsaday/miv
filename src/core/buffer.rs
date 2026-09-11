@@ -1,8 +1,8 @@
 //! A single open file: its text, cursor, viewport, undo history and marks.
 
-use crate::history::{Change, History};
+use crate::core::history::{Change, History};
+use crate::core::text::{self, Position};
 use crate::syntax::SyntaxCache;
-use crate::text::{self, Position};
 use anyhow::{Context, Result};
 use ropey::Rope;
 use std::collections::HashMap;
@@ -49,9 +49,9 @@ pub struct Buffer {
     /// Named a file that does not exist yet.
     pub is_new_file: bool,
     /// Findings from the external checkers, kept per tool.
-    pub diagnostics: crate::diagnostics::Diagnostics,
+    pub diagnostics: crate::tools::diagnostics::Diagnostics,
     /// Lines that differ from git HEAD.
-    pub line_statuses: crate::vcs::LineStatuses,
+    pub line_statuses: crate::tools::vcs::LineStatuses,
     /// Revisions the checkers and the git diff last ran against, so neither
     /// repeats work nor shows a result for text that has since changed.
     pub checked_revision: Option<usize>,
@@ -81,8 +81,8 @@ impl Buffer {
             syntax_name: "Plain Text".to_string(),
             syntax_cache: SyntaxCache::default(),
             is_new_file: false,
-            diagnostics: crate::diagnostics::Diagnostics::default(),
-            line_statuses: crate::vcs::LineStatuses::new(),
+            diagnostics: crate::tools::diagnostics::Diagnostics::default(),
+            line_statuses: crate::tools::vcs::LineStatuses::new(),
             checked_revision: None,
             diffed_revision: None,
             edits: Vec::new(),

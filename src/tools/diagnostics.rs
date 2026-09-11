@@ -121,7 +121,7 @@ impl Checker {
     }
 
     pub fn applies_to(&self, syntax_name: &str, path: Option<&Path>) -> bool {
-        crate::external::applies(&self.filetypes, &self.extensions, syntax_name, path)
+        crate::tools::external::applies(&self.filetypes, &self.extensions, syntax_name, path)
     }
 
     /// Pull diagnostics out of a tool's output, ignoring lines that do not

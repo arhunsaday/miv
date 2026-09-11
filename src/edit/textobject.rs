@@ -1,8 +1,8 @@
 //! Text objects: the `iw`/`a(` half of the grammar, which select a region
 //! around the cursor rather than a span from it.
 
-use crate::motion::EditRange;
-use crate::text::{self, char_class, CharClass, Position};
+use crate::core::text::{self, char_class, CharClass, Position};
+use crate::edit::motion::EditRange;
 use ropey::Rope;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

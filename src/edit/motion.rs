@@ -4,8 +4,8 @@
 //! operator how to turn `cursor -> target` into a range: whether the character
 //! under the target is included, and whether whole lines are affected.
 
-use crate::search::Search;
-use crate::text::{self, char_class, CharClass, Position};
+use crate::core::search::Search;
+use crate::core::text::{self, char_class, CharClass, Position};
 use ropey::Rope;
 use std::collections::HashMap;
 

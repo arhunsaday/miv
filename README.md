@@ -54,6 +54,64 @@ There is one window, so `:q` leaves the editor rather than closing a buffer
 **Files** — multiple buffers, atomic saves, UTF-8, and round-tripping of CRLF
 line endings and files with no trailing newline.
 
+## Windows
+
+```
+Ctrl-W v        split side by side (also :vsplit)
+Ctrl-W s        split stacked (also :split)
+Ctrl-W w        next window; Ctrl-W hjkl to move by direction
+Ctrl-W c / o    close this one / close the others
+```
+
+Each window is a view with its own cursor, viewport and scroll position, and
+its own status line along the bottom — the active one is the one wearing the
+mode badge. `:q` closes a window while others remain, and only leaves the
+editor once it is the last one.
+
+In a shared session each participant has their **own** windows and layout, so
+one person splitting the screen does not rearrange anyone else's.
+
+## Finding things
+
+```
+Ctrl-P          fuzzy-find a file in the project (also :files)
+Ctrl-K          the command palette (also :commands)
+:grep {pattern} search the project; Enter jumps to the hit
+:buffers        pick from the open buffers
+Ctrl-W e        show or hide the file explorer (also :explorer)
+Ctrl-W E        move the keyboard to the explorer and back
+```
+
+One picker serves all of them, so the keys are the same everywhere: type to
+filter, `Ctrl-N`/`Ctrl-P` or the arrows to move, `Enter` to take it, `Esc` to
+leave. Matching is fuzzy and path-aware — `src/mn` finds `src/main.rs` — and
+the file list honours `.gitignore`. Backspacing past the start of an empty
+query closes the picker, like the command line.
+
+The palette lists what each command actually runs, so it doubles as a way to
+learn the ex commands; entries that need an argument open the command line
+prefilled rather than guessing.
+
+`:diag` now opens a picker too, so a diagnostic list is something you jump
+from rather than just read.
+
+## Auto-pairs and completion
+
+Brackets and quotes close themselves, but only where that helps: a bracket
+pairs when what follows it is whitespace, a closing bracket or a separator, so
+typing `(` in front of a word does not wrap it, and an apostrophe inside a word
+stays an apostrophe. Backspace takes an empty pair as a unit, typing the
+closing half steps over it, and `Enter` between a pair opens the block out with
+the closer on its own line.
+
+Completion comes from what is in front of you: the words in your open buffers,
+nearest to the cursor first, plus the keywords of the language you are in. No
+language server and nothing to configure. `Ctrl-N`/`Ctrl-P` move through the
+list, `Tab` or `Ctrl-Y` accepts, `Ctrl-E` dismisses it.
+
+`Esc` always leaves insert mode. A popup never takes it: that is the modal
+contract, and borrowing `Esc` to dismiss a list would be a nasty surprise.
+
 ## Diagnostics, formatting and the gutter
 
 miv does not know what a YAML error is. It knows how to run a command and read
@@ -235,6 +293,12 @@ addressable and removes a whole class of last-line edge cases.
 history and invalidate the syntax cache, so no call site can forget to.
 Transactions nest by depth, so a command built from several primitives still
 undoes as one step.
+
+**The focused window's cursor lives on the buffer.** Only unfocused windows
+keep their own copy, and changing focus swaps the two. That is why every
+motion, operator and command works per-window without knowing windows exist —
+and it is the same mechanism that gives each session participant their own
+cursor, generalised from one view to a layout of them.
 
 **A participant is a small bundle of swapped-in state.** `session::PerUser`
 holds what belongs to a person rather than to the document — cursor, viewport,
