@@ -55,6 +55,7 @@ pub fn share(app: &mut App, args: &str) {
         listener.shutdown,
         access,
         settings.announce,
+        &app.config.sidebar,
     );
     let url = session.url();
     app.session = Some(session);
@@ -252,9 +253,12 @@ fn handle_event(app: &mut App, event: SessionEvent) {
             };
             let color = next_color(session.participants.len());
             let access = session.default_access;
-            let mut state = PerUser::at(app.current);
-            state.cursor = app.buffer().cursor;
-            state.view_top = app.buffer().view_top;
+            // A guest lands where the host is looking.
+            let mut state = PerUser::at(app.current, &app.config.sidebar);
+            let cursor = app.buffer().cursor;
+            let view_top = app.buffer().view_top;
+            state.set_cursor(cursor);
+            state.workspace.focused_mut().view_top = view_top;
 
             let _ = outbound.send(ServerMessage::Welcome {
                 version: super::protocol::PROTOCOL_VERSION,

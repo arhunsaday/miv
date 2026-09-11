@@ -6,7 +6,7 @@
 //! one, so a redraw costs a bounded number of line parses no matter how far
 //! into the file the viewport is.
 
-use crate::text;
+use crate::core::text;
 use ratatui::style::{Color as TuiColor, Modifier, Style as TuiStyle};
 use ropey::Rope;
 use std::path::Path;

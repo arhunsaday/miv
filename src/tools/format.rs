@@ -9,7 +9,7 @@
 
 use crate::app::App;
 use crate::config::FormatterConfig;
-use crate::text;
+use crate::core::text;
 use similar::{DiffOp, TextDiff};
 use std::path::Path;
 use std::time::Duration;
@@ -44,7 +44,7 @@ impl Formatter {
     }
 
     pub fn applies_to(&self, syntax_name: &str, path: Option<&Path>) -> bool {
-        crate::external::applies(&self.filetypes, &self.extensions, syntax_name, path)
+        crate::tools::external::applies(&self.filetypes, &self.extensions, syntax_name, path)
     }
 }
 
@@ -77,8 +77,9 @@ pub fn format_buffer(app: &mut App) -> Result<Option<Formatted>, String> {
     let directory = path.as_deref().and_then(|p| p.parent());
     let timeout = Duration::from_millis(app.config.format.timeout_ms);
 
-    let output = crate::external::run(&formatter.command, &name, &original, directory, timeout)
-        .map_err(|e| format!("{}: {e}", formatter.name))?;
+    let output =
+        crate::tools::external::run(&formatter.command, &name, &original, directory, timeout)
+            .map_err(|e| format!("{}: {e}", formatter.name))?;
 
     if output.status != Some(0) {
         let reason = output
@@ -121,7 +122,7 @@ pub fn apply(app: &mut App, original: &str, formatted: &str) -> usize {
     buffer.begin();
     // Apply back to front so the offsets of earlier splices stay valid.
     for op in diff.ops().iter().rev() {
-        let line_start = |buffer: &crate::buffer::Buffer, line: usize| -> usize {
+        let line_start = |buffer: &crate::core::buffer::Buffer, line: usize| -> usize {
             let limit = buffer.rope.len_lines().saturating_sub(1);
             buffer.rope.line_to_char(line.min(limit))
         };
@@ -165,7 +166,7 @@ pub fn apply(app: &mut App, original: &str, formatted: &str) -> usize {
     // Move the cursor through the same splices, so formatting does not fling
     // you to the top of the file.
     let mut cursor = cursor_before;
-    let edits: Vec<crate::history::Change> = app.buffer().edits_since(mark).to_vec();
+    let edits: Vec<crate::core::history::Change> = app.buffer().edits_since(mark).to_vec();
     for change in &edits {
         cursor = crate::session::shift_offset(cursor, change);
     }

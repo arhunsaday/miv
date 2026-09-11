@@ -4,7 +4,7 @@
 //! a [`Transaction`] by the command that caused them, which is what gives undo
 //! its Vim-like granularity (one whole insert session undoes at once).
 
-use crate::text::Position;
+use crate::core::text::Position;
 
 /// A single splice: at char offset `at`, `removed` was replaced by `inserted`.
 /// Swapping the two fields inverts it.

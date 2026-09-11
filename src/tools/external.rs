@@ -5,7 +5,7 @@
 //! synchronously with a timeout, because the caller is waiting for the result
 //! and writing an unformatted file first would be worse than a brief pause.
 
-use std::io::Write;
+use std::io::{ErrorKind as IoErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -153,6 +153,29 @@ pub fn run(
     }
 }
 
+/// `path:line:col:text`, which is what `rg --vimgrep` and `grep -n` produce.
+fn parse_grep(output: &str) -> Vec<GrepMatch> {
+    let mut matches = Vec::new();
+    for line in output.lines() {
+        let mut parts = line.splitn(4, ':');
+        let (Some(path), Some(number), Some(column), Some(text)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let (Ok(number), Ok(column)) = (number.parse::<usize>(), column.parse::<usize>()) else {
+            continue;
+        };
+        matches.push(GrepMatch {
+            path: path.to_string(),
+            line: number.saturating_sub(1),
+            col: column.saturating_sub(1),
+            text: text.trim().to_string(),
+        });
+    }
+    matches
+}
+
 /// Does a tool configured for these filetypes and extensions apply to this
 /// buffer? Matching on either the detected syntax or the file name keeps
 /// configuration predictable: extensions are the reliable half for the
@@ -194,17 +217,33 @@ pub struct Failure {
     pub missing: bool,
 }
 
+/// One `rg` hit.
+#[derive(Clone, Debug)]
+pub struct GrepMatch {
+    pub path: String,
+    pub line: usize,
+    pub col: usize,
+    pub text: String,
+}
+
 pub enum Finished {
+    /// Files under a root, for the file picker.
+    Listed { files: Vec<String>, truncated: bool },
+    /// Search hits across the project.
+    Grepped {
+        pattern: String,
+        result: Result<Vec<GrepMatch>, String>,
+    },
     Checked {
         buffer_id: usize,
         revision: usize,
         tool: String,
-        result: Result<Vec<crate::diagnostics::Diagnostic>, Failure>,
+        result: Result<Vec<crate::tools::diagnostics::Diagnostic>, Failure>,
     },
     Diffed {
         buffer_id: usize,
         revision: usize,
-        result: Result<crate::vcs::LineStatuses, String>,
+        result: Result<crate::tools::vcs::LineStatuses, String>,
     },
 }
 
@@ -237,7 +276,7 @@ pub struct Snapshot {
 
 impl Runner {
     /// Run one checker over a snapshot of the buffer.
-    pub fn check(&self, checker: crate::diagnostics::Checker, snapshot: Snapshot) {
+    pub fn check(&self, checker: crate::tools::diagnostics::Checker, snapshot: Snapshot) {
         let sender = self.sender.clone();
         thread::spawn(move || {
             let Snapshot {
@@ -279,12 +318,71 @@ impl Runner {
     pub fn diff(&self, path: PathBuf, snapshot: Snapshot) {
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let result = crate::vcs::diff_against_head(&path, &snapshot.text, snapshot.timeout);
+            let result =
+                crate::tools::vcs::diff_against_head(&path, &snapshot.text, snapshot.timeout);
             let _ = sender.send(Finished::Diffed {
                 buffer_id: snapshot.buffer_id,
                 revision: snapshot.revision,
                 result,
             });
+        });
+    }
+
+    /// Walk the project for the file picker, honouring `.gitignore`.
+    ///
+    /// Runs on a thread and is capped: a picker over a million files is not
+    /// useful, and refusing to build the list is better than stalling.
+    pub fn list_files(&self, root: PathBuf, limit: usize) {
+        let sender = self.sender.clone();
+        thread::spawn(move || {
+            let mut files = Vec::new();
+            let mut truncated = false;
+            let walker = ignore::WalkBuilder::new(&root)
+                .hidden(true)
+                .git_ignore(true)
+                .git_global(true)
+                .parents(true)
+                .build();
+            for entry in walker {
+                let Ok(entry) = entry else { continue };
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+                    continue;
+                }
+                if files.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+                let path = entry.path();
+                let shown = path
+                    .strip_prefix(&root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned();
+                files.push(shown);
+            }
+            files.sort_unstable();
+            let _ = sender.send(Finished::Listed { files, truncated });
+        });
+    }
+
+    /// Search the project with an external grep.
+    pub fn grep(&self, command: Vec<String>, pattern: String, root: PathBuf, timeout: Duration) {
+        let sender = self.sender.clone();
+        thread::spawn(move || {
+            let command: Vec<String> = command
+                .iter()
+                .map(|part| part.replace("$PATTERN", &pattern))
+                .collect();
+            let outcome = run(&command, "", "", Some(&root), timeout);
+            let result = match outcome {
+                Ok(output) => Ok(parse_grep(&output.stdout)),
+                Err(e) if e.kind() == IoErrorKind::NotFound => Err(format!(
+                    "{} is not installed (set picker.grep_command)",
+                    command.first().map(String::as_str).unwrap_or("grep")
+                )),
+                Err(e) => Err(format!("{e}")),
+            };
+            let _ = sender.send(Finished::Grepped { pattern, result });
         });
     }
 

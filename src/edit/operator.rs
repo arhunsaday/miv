@@ -1,10 +1,10 @@
 //! Operators: the "what to do" half of the grammar, applied to a resolved
 //! character range.
 
-use crate::buffer::Buffer;
-use crate::motion::EditRange;
-use crate::register::{RegisterContent, RegisterKind, Registers};
-use crate::text::{self, Position};
+use crate::core::buffer::Buffer;
+use crate::core::text::{self, Position};
+use crate::edit::motion::EditRange;
+use crate::edit::register::{RegisterContent, RegisterKind, Registers};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operator {

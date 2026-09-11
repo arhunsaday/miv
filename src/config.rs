@@ -42,6 +42,12 @@ pub struct EditorConfig {
     /// Write a final newline even if the file arrived without one. Off by
     /// default so files round-trip exactly as they were read.
     pub ensure_final_newline: bool,
+    /// Close brackets and quotes as you open them.
+    pub auto_pairs: bool,
+    /// Offer completions while you type, rather than only on Ctrl-N.
+    pub auto_complete: bool,
+    /// How much of a word must be typed before suggestions appear.
+    pub complete_min_chars: usize,
 }
 
 impl Default for EditorConfig {
@@ -58,6 +64,9 @@ impl Default for EditorConfig {
             wrap_search: true,
             trim_trailing_whitespace: false,
             ensure_final_newline: false,
+            auto_pairs: true,
+            auto_complete: true,
+            complete_min_chars: 2,
         }
     }
 }
@@ -152,8 +161,8 @@ impl Default for DiagnosticsConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FormatConfig {
-    /// Format before writing. Off by default: reformatting a file you only
-    /// meant to save is a surprise.
+    /// Format before writing. On by default; a save therefore rewrites any
+    /// file whose type a formatter claims.
     pub on_save: bool,
     pub timeout_ms: u64,
     pub use_builtin: bool,
@@ -262,6 +271,68 @@ impl Default for SessionConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PickerConfig {
+    /// Most files the finder will list. A cap keeps the picker responsive in a
+    /// monorepo instead of stalling on a hopeless list.
+    pub max_files: usize,
+    /// Project search. `$PATTERN` is replaced with what you typed; anything
+    /// printing `path:line:col:text` works.
+    pub grep_command: Vec<String>,
+    pub timeout_ms: u64,
+}
+
+impl Default for PickerConfig {
+    fn default() -> Self {
+        Self {
+            max_files: 50_000,
+            grep_command: [
+                "rg",
+                "--vimgrep",
+                "--color=never",
+                "--smart-case",
+                "--",
+                "$PATTERN",
+            ]
+            .iter()
+            .map(|part| part.to_string())
+            .collect(),
+            timeout_ms: 10_000,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SidebarConfig {
+    pub width: u16,
+    pub side: SidebarSide,
+    /// Show files git ignores. Off by default, or a Rust project's `target`
+    /// would bury everything else.
+    pub show_ignored: bool,
+    /// Open the sidebar when the editor starts.
+    pub open_on_start: bool,
+}
+
+impl Default for SidebarConfig {
+    fn default() -> Self {
+        Self {
+            width: 30,
+            side: SidebarSide::Left,
+            show_ignored: false,
+            open_on_start: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -271,6 +342,8 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
     pub format: FormatConfig,
     pub signs: SignsConfig,
+    pub picker: PickerConfig,
+    pub sidebar: SidebarConfig,
 }
 
 impl Config {
@@ -301,6 +374,18 @@ impl Config {
             "session.max_participants must be at least 1"
         );
         anyhow::ensure!(
+            (8..=120).contains(&self.sidebar.width),
+            "sidebar.width must be between 8 and 120"
+        );
+        anyhow::ensure!(
+            !self.picker.grep_command.is_empty(),
+            "picker.grep_command must not be empty"
+        );
+        anyhow::ensure!(
+            self.picker.max_files >= 1,
+            "picker.max_files must be at least 1"
+        );
+        anyhow::ensure!(
             self.diagnostics.timeout_ms >= 100,
             "diagnostics.timeout_ms must be at least 100"
         );
@@ -309,10 +394,10 @@ impl Config {
             "format.timeout_ms must be at least 100"
         );
         for checker in &self.diagnostics.checker {
-            crate::diagnostics::Checker::compile(checker).map_err(anyhow::Error::msg)?;
+            crate::tools::diagnostics::Checker::compile(checker).map_err(anyhow::Error::msg)?;
         }
         for formatter in &self.format.formatter {
-            crate::format::Formatter::compile(formatter).map_err(anyhow::Error::msg)?;
+            crate::tools::format::Formatter::compile(formatter).map_err(anyhow::Error::msg)?;
         }
         Ok(())
     }

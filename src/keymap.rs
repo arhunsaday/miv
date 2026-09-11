@@ -8,14 +8,14 @@
 
 use crate::app::{App, PromptKind};
 use crate::command;
+use crate::core::search::Direction;
+use crate::core::text::{self, Position};
+use crate::edit::motion::{self, FindTarget, Motion, MotionKind};
+use crate::edit::operator::{self, Operator, Outcome};
+use crate::edit::register::RegisterContent;
+use crate::edit::textobject::{Scope, TextObject};
 use crate::keys;
 use crate::mode::{Mode, VisualKind};
-use crate::motion::{self, FindTarget, Motion, MotionKind};
-use crate::operator::{self, Operator, Outcome};
-use crate::register::RegisterContent;
-use crate::search::Direction;
-use crate::text::{self, Position};
-use crate::textobject::{Scope, TextObject};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A key the state machine is waiting on before it can act.
@@ -39,6 +39,8 @@ pub enum Awaiting {
     BracketPrefix {
         forward: bool,
     },
+    /// `Ctrl-W` waiting for a window command.
+    WindowPrefix,
     TextObject {
         scope: Scope,
     },
@@ -92,6 +94,18 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         stripped.modifiers.remove(KeyModifiers::ALT);
         handle(app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         handle(app, stripped);
+        return;
+    }
+
+    // The picker is modal: while it is up it owns the keyboard.
+    if app.picker.is_some() {
+        picker_key(app, key);
+        return;
+    }
+
+    // The sidebar takes the keyboard while it is focused.
+    if app.sidebar_focused() && !app.mode.is_prompt() {
+        sidebar_key(app, key);
         return;
     }
 
@@ -519,6 +533,15 @@ fn control_key(app: &mut App, c: char, count: usize) {
         'r' => redo(app, count),
         'o' => jump_back(app),
         'i' => jump_forward(app),
+        'w' => app.pending.awaiting = Some(Awaiting::WindowPrefix),
+        'p' => {
+            app.open_file_picker();
+            app.pending.reset();
+        }
+        'k' => {
+            app.open_command_palette();
+            app.pending.reset();
+        }
         'v' => {
             app.set_error("visual block mode is not implemented");
             app.pending.reset();
@@ -630,6 +653,43 @@ fn handle_awaiting(app: &mut App, awaiting: Awaiting, key: KeyEvent) {
             }
             app.pending.reset();
         }
+        Awaiting::WindowPrefix => {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                // `:split` stacks, `:vsplit` puts them side by side.
+                KeyCode::Char('s') | KeyCode::Char('S') => app.split_window(false),
+                KeyCode::Char('v') | KeyCode::Char('V') => app.split_window(true),
+                KeyCode::Char('c') | KeyCode::Char('q') => {
+                    app.close_window();
+                }
+                KeyCode::Char('o') => app.only_window(),
+                // `e` for the explorer: show or hide it; `E` just moves the
+                // keyboard there and back.
+                KeyCode::Char('e') => app.toggle_sidebar(),
+                KeyCode::Char('E') => {
+                    let focused = app.sidebar_focused();
+                    app.focus_sidebar(!focused);
+                }
+                // Ctrl-W Ctrl-W is the same as Ctrl-W w; people type both.
+                KeyCode::Char('w') if !ctrl => app.focus_next_window(true),
+                KeyCode::Char('w') if ctrl => app.focus_next_window(true),
+                KeyCode::Char('W') => app.focus_next_window(false),
+                KeyCode::Char('h') | KeyCode::Left => {
+                    app.focus_toward(crate::view::layout::Direction::Left)
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    app.focus_toward(crate::view::layout::Direction::Down)
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.focus_toward(crate::view::layout::Direction::Up)
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    app.focus_toward(crate::view::layout::Direction::Right)
+                }
+                _ => {}
+            }
+            app.pending.reset();
+        }
         Awaiting::BracketPrefix { forward } => {
             match ch {
                 Some('d') => goto_diagnostic(app, forward),
@@ -668,7 +728,7 @@ fn handle_awaiting(app: &mut App, awaiting: Awaiting, key: KeyEvent) {
             match object {
                 Some(object) => {
                     let cursor = app.buffer().cursor;
-                    let resolved = crate::textobject::resolve(
+                    let resolved = crate::edit::textobject::resolve(
                         &app.buffer().rope,
                         cursor,
                         object,
@@ -1066,7 +1126,7 @@ fn repeat_last_change(app: &mut App) {
 
 fn search_word_under_cursor(app: &mut App) {
     let cursor = app.buffer().cursor;
-    let range = crate::textobject::resolve(
+    let range = crate::edit::textobject::resolve(
         &app.buffer().rope,
         cursor,
         TextObject::Word { big: false },
@@ -1130,7 +1190,7 @@ fn goto_diagnostic(app: &mut App, forward: bool) {
 
 fn goto_hunk(app: &mut App, forward: bool) {
     let line = app.buffer().cursor.line;
-    let target = crate::vcs::next_hunk(&app.buffer().line_statuses, line, forward);
+    let target = crate::tools::vcs::next_hunk(&app.buffer().line_statuses, line, forward);
     match target {
         Some(line) => {
             push_jump(app);
@@ -1202,11 +1262,39 @@ fn insert_mode(app: &mut App, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('c') => return app.leave_insert(),
+            // Vim's completion keys, and its accept key.
+            KeyCode::Char('n') => return app.move_completion(1),
+            KeyCode::Char('p') => return app.move_completion(-1),
+            KeyCode::Char('y') => {
+                app.accept_completion();
+                return;
+            }
+            KeyCode::Char('e') => {
+                app.completion = None;
+                return;
+            }
             // Ctrl-J and Ctrl-M *are* LF and CR.
             KeyCode::Char('j') | KeyCode::Char('m') => return app.insert_newline(),
             // Anything else control-modified is not a character to insert.
             // Without this, Ctrl-K typed a literal `k`.
             KeyCode::Char(_) => return,
+            _ => {}
+        }
+    }
+
+    // While the suggestion list is up it takes the keys that mean something to
+    // it — but never Esc. In a modal editor Esc leaves insert mode, full stop;
+    // borrowing it to dismiss a popup would be a nasty surprise. Ctrl-E
+    // dismisses, as in Vim.
+    if app.completion.is_some() {
+        match key.code {
+            KeyCode::Tab => {
+                if app.accept_completion() {
+                    return;
+                }
+            }
+            KeyCode::Up => return app.move_completion(-1),
+            KeyCode::Down => return app.move_completion(1),
             _ => {}
         }
     }
@@ -1268,8 +1356,102 @@ fn replace_mode(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Keys while the sidebar has focus.
+fn sidebar_key(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // The global entry points keep working while the sidebar has focus: it
+    // would be a strange editor where standing in the file tree meant you
+    // could not open the command line.
+    let global = match key.code {
+        KeyCode::Char('w') if ctrl => true,
+        KeyCode::Char('p') if ctrl => true,
+        KeyCode::Char('k') if ctrl => true,
+        KeyCode::Char(':') if !ctrl => true,
+        _ => false,
+    };
+    if global {
+        app.focus_sidebar(false);
+        normal_mode(app, key);
+        return;
+    }
+
+    let explorer = &mut app.workspace.sidebar.explorer;
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => explorer.move_selection(1),
+        KeyCode::Char('k') | KeyCode::Up => explorer.move_selection(-1),
+        KeyCode::Char('g') | KeyCode::Home => explorer.selected = 0,
+        KeyCode::Char('G') | KeyCode::End => {
+            let last = explorer.entries().len().saturating_sub(1);
+            explorer.selected = last;
+        }
+        KeyCode::Char('h') | KeyCode::Left => explorer.collapse(),
+        KeyCode::Char('l') | KeyCode::Right => explorer.expand(),
+        KeyCode::Char('r') => explorer.refresh(),
+        KeyCode::Enter | KeyCode::Char('o') => app.explorer_activate(),
+        KeyCode::Esc | KeyCode::Char('q') => app.focus_sidebar(false),
+        KeyCode::Char('?') => {
+            app.set_message("explorer: j/k move · l/h expand/collapse · Enter open · q leave")
+        }
+        _ => {}
+    }
+}
+
+/// Keys while a picker is open.
+///
+/// The bindings follow fzf rather than Vim, because a picker is a prompt: the
+/// same `Ctrl-P`/`Ctrl-N` that opened it moves through it.
+fn picker_key(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let Some(picker) = app.picker.as_mut() else {
+        return;
+    };
+
+    if ctrl {
+        match key.code {
+            KeyCode::Char('c') => return app.close_picker(),
+            KeyCode::Char('n') | KeyCode::Char('j') => return picker.move_selection(1),
+            KeyCode::Char('p') | KeyCode::Char('k') => return picker.move_selection(-1),
+            KeyCode::Char('u') => return picker.clear_input(),
+            KeyCode::Char('w') => return picker.delete_word(),
+            KeyCode::Char('d') => return picker.move_selection(10),
+            KeyCode::Char('a') => return picker.move_caret(-(picker.caret as isize)),
+            _ => return,
+        }
+    }
+
+    match key.code {
+        KeyCode::Esc => app.close_picker(),
+        KeyCode::Enter => app.accept_picker(),
+        KeyCode::Up => picker.move_selection(-1),
+        KeyCode::Down | KeyCode::Tab => picker.move_selection(1),
+        KeyCode::PageUp => picker.move_selection(-10),
+        KeyCode::PageDown => picker.move_selection(10),
+        KeyCode::Left => picker.move_caret(-1),
+        KeyCode::Right => picker.move_caret(1),
+        KeyCode::Home => picker.move_caret(-(picker.caret as isize)),
+        KeyCode::End => {
+            let length = picker.input.chars().count() as isize;
+            picker.move_caret(length)
+        }
+        KeyCode::Backspace => {
+            // Backspacing past the start closes it, as the command line does.
+            if !picker.backspace() {
+                app.close_picker();
+            }
+        }
+        KeyCode::Char(c) => picker.insert(c),
+        _ => {}
+    }
+}
+
 /// Text arriving from a bracketed paste, which the terminal delivers whole.
 pub fn handle_paste(app: &mut App, text: &str) {
+    if let Some(picker) = app.picker.as_mut() {
+        let single_line: String = text.lines().collect::<Vec<_>>().join(" ");
+        picker.insert_str(&single_line);
+        return;
+    }
     match app.mode {
         Mode::Insert | Mode::Replace => {
             let normalized = text.replace("\r\n", "\n").replace('\r', "\n");

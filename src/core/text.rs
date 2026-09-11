@@ -1,7 +1,7 @@
 //! Text primitives shared by every layer: positions, rope queries and the
 //! character classification the word motions are built on.
 //!
-//! Invariant upheld by [`crate::buffer::Buffer`]: the rope always ends with a
+//! Invariant upheld by [`crate::core::buffer::Buffer`]: the rope always ends with a
 //! newline. `line_count` therefore reports one fewer line than ropey does, and
 //! every line index in `0..line_count()` is addressable.
 

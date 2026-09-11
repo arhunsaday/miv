@@ -21,11 +21,11 @@ mod tests;
 pub mod web;
 
 use crate::app::{App, Message, Prompt};
-use crate::history::Change;
+use crate::core::history::Change;
+use crate::core::text::{self, Position};
+use crate::edit::motion::FindTarget;
 use crate::keymap::Pending;
 use crate::mode::Mode;
-use crate::motion::FindTarget;
-use crate::text::{self, Position};
 use protocol::{Access, RosterEntry, ServerMessage, WireCell};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer as ScreenBuffer;
@@ -43,49 +43,56 @@ const CURSOR_COLORS: [u8; 6] = [213, 114, 215, 117, 210, 156];
 /// State that belongs to a person rather than to the document.
 #[derive(Clone)]
 pub struct PerUser {
-    pub buffer_index: usize,
-    pub cursor: Position,
-    pub desired_col: usize,
-    pub view_top: usize,
-    pub view_left: usize,
+    /// Each participant has their own windows and their own layout, so one
+    /// person splitting the screen does not rearrange anybody else's.
+    pub workspace: crate::view::window::Workspace,
     pub mode: Mode,
     pub pending: Pending,
-    pub visual_anchor: Position,
     pub last_find: Option<FindTarget>,
     pub prompt: Option<Prompt>,
     pub message: Option<Message>,
 }
 
 impl PerUser {
-    pub fn at(buffer_index: usize) -> Self {
+    pub fn at(buffer_index: usize, sidebar: &crate::config::SidebarConfig) -> Self {
         Self {
-            buffer_index,
-            cursor: Position::default(),
-            desired_col: 0,
-            view_top: 0,
-            view_left: 0,
+            workspace: crate::view::window::Workspace::new(buffer_index, sidebar),
             mode: Mode::Normal,
             pending: Pending::default(),
-            visual_anchor: Position::default(),
             last_find: None,
             prompt: None,
             message: None,
         }
     }
+
+    /// Where this participant's caret is, for the other participants' views.
+    pub fn cursor(&self) -> Position {
+        self.workspace.focused().cursor
+    }
+
+    pub fn visual_anchor(&self) -> Position {
+        self.workspace.focused().visual_anchor
+    }
+
+    pub fn buffer_index(&self) -> usize {
+        self.workspace.focused().buffer_index
+    }
+
+    pub fn set_cursor(&mut self, cursor: Position) {
+        let window = self.workspace.focused_mut();
+        window.cursor = cursor;
+        window.desired_col = cursor.col;
+    }
 }
 
 /// Lift the live editor state into a [`PerUser`].
-fn capture(app: &App) -> PerUser {
-    let buffer = app.buffer();
+fn capture(app: &mut App) -> PerUser {
+    // The live cursor belongs to the focused window, so fold it back in first.
+    app.sync_window();
     PerUser {
-        buffer_index: app.current,
-        cursor: buffer.cursor,
-        desired_col: buffer.desired_col,
-        view_top: buffer.view_top,
-        view_left: buffer.view_left,
+        workspace: app.workspace.clone(),
         mode: app.mode,
         pending: app.pending.clone(),
-        visual_anchor: app.visual_anchor,
         last_find: app.last_find,
         prompt: app.prompt.clone(),
         message: app.message.clone(),
@@ -93,18 +100,13 @@ fn capture(app: &App) -> PerUser {
 }
 
 fn restore(app: &mut App, state: &PerUser) {
-    app.current = state.buffer_index.min(app.buffers.len().saturating_sub(1));
+    app.workspace = state.workspace.clone();
     app.mode = state.mode;
     app.pending = state.pending.clone();
-    app.visual_anchor = state.visual_anchor;
     app.last_find = state.last_find;
     app.prompt = state.prompt.clone();
     app.message = state.message.clone();
-    let buffer = app.buffer_mut();
-    buffer.cursor = state.cursor;
-    buffer.desired_col = state.desired_col;
-    buffer.view_top = state.view_top;
-    buffer.view_left = state.view_left;
+    app.load_window();
 }
 
 /// Where a participant's caret is, in a form the renderer can read without
@@ -137,13 +139,13 @@ pub struct Participant {
 }
 
 impl Participant {
-    fn host(name: String) -> Self {
+    fn host(name: String, sidebar: &crate::config::SidebarConfig) -> Self {
         Self {
             id: HOST_ID,
             name,
             color: CURSOR_COLORS[0],
             access: Access::Write,
-            state: PerUser::at(0),
+            state: PerUser::at(0, sidebar),
             following: None,
             outbound: None,
             terminal: None,
@@ -196,6 +198,7 @@ pub struct Session {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         host_name: String,
         token: String,
@@ -204,9 +207,10 @@ impl Session {
         shutdown: Arc<AtomicBool>,
         default_access: Access,
         announce: bool,
+        sidebar: &crate::config::SidebarConfig,
     ) -> Self {
         Self {
-            participants: vec![Participant::host(host_name)],
+            participants: vec![Participant::host(host_name, sidebar)],
             live: 0,
             token,
             address,
@@ -252,10 +256,10 @@ impl Session {
                     "terminal"
                 }
                 .to_string(),
-                line: p.state.cursor.line + 1,
+                line: p.state.cursor().line + 1,
                 file: app
                     .buffers
-                    .get(p.state.buffer_index)
+                    .get(p.state.buffer_index())
                     .map(|b| b.short_name())
                     .unwrap_or_default(),
                 is_host: p.id == HOST_ID,
@@ -276,7 +280,7 @@ impl Session {
 /// `activate` only does this when it switches away, so without an explicit
 /// sync the active participant's stored caret goes stale — and that is the
 /// caret every other participant is shown.
-fn sync_live(app: &App, session: &mut Session) {
+fn sync_live(app: &mut App, session: &mut Session) {
     session.participants[session.live].state = capture(app);
 }
 
@@ -322,19 +326,19 @@ pub fn dispatch(app: &mut App, actor: u32, action: impl FnOnce(&mut App)) {
         return;
     };
 
-    let buffer_index = session.participants[index].state.buffer_index;
+    let buffer_index = session.participants[index].state.buffer_index();
     // Snapshot the others as character offsets against the text as it is now,
     // because a Position means nothing once the lines above it change.
     let mut snapshots: Vec<(u32, usize, usize)> = Vec::new();
     for (i, participant) in session.participants.iter().enumerate() {
-        if i == index || participant.state.buffer_index != buffer_index {
+        if i == index || participant.state.buffer_index() != buffer_index {
             continue;
         }
         let rope = &app.buffers[buffer_index].rope;
         snapshots.push((
             participant.id,
-            text::pos_to_char(rope, participant.state.cursor),
-            text::pos_to_char(rope, participant.state.visual_anchor),
+            text::pos_to_char(rope, participant.state.cursor()),
+            text::pos_to_char(rope, participant.state.visual_anchor()),
         ));
     }
 
@@ -370,10 +374,10 @@ pub fn dispatch(app: &mut App, actor: u32, action: impl FnOnce(&mut App)) {
             let rope = &app.buffers[buffer_index].rope;
             let allow_eol = session.participants[i].state.mode.allows_eol();
             let moved = text::clamp(rope, text::char_to_pos(rope, cursor), allow_eol);
+            let anchor = text::char_to_pos(rope, anchor);
             let participant = &mut session.participants[i];
-            participant.state.cursor = moved;
-            participant.state.desired_col = moved.col;
-            participant.state.visual_anchor = text::char_to_pos(rope, anchor);
+            participant.state.set_cursor(moved);
+            participant.state.workspace.focused_mut().visual_anchor = anchor;
         }
     }
 
@@ -400,13 +404,13 @@ pub fn refresh_remote_cursors(app: &mut App) {
             id: p.id,
             name: p.name.clone(),
             color: p.color,
-            buffer_index: p.state.buffer_index,
-            cursor: p.state.cursor,
+            buffer_index: p.state.buffer_index(),
+            cursor: p.state.cursor(),
             selection: p.state.mode.is_visual().then(|| {
-                if p.state.visual_anchor <= p.state.cursor {
-                    (p.state.visual_anchor, p.state.cursor)
+                if p.state.visual_anchor() <= p.state.cursor() {
+                    (p.state.visual_anchor(), p.state.cursor())
                 } else {
-                    (p.state.cursor, p.state.visual_anchor)
+                    (p.state.cursor(), p.state.visual_anchor())
                 }
             }),
         })
@@ -434,12 +438,10 @@ pub fn render_remote_frames(app: &mut App) {
         // Follow mode: borrow the followed participant's viewport and caret.
         if let Some(target) = session.participants[index].following {
             if let Some(target_index) = session.index_of(target) {
-                let followed = session.participants[target_index].state.clone();
-                let me = &mut session.participants[index].state;
-                me.buffer_index = followed.buffer_index;
-                me.cursor = followed.cursor;
-                me.view_top = followed.view_top;
-                me.view_left = followed.view_left;
+                // Mirror the followed participant's whole arrangement, so
+                // following someone shows you what they see, splits included.
+                let followed = session.participants[target_index].state.workspace.clone();
+                session.participants[index].state.workspace = followed;
             }
         }
 
