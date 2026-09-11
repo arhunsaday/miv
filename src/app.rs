@@ -13,8 +13,9 @@ use crate::syntax::SyntaxEngine;
 use crate::text::{self, Position};
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use syntect::highlighting::Theme;
 
 /// Keys a single real keystroke may cause to be replayed. A recursive macro
@@ -22,7 +23,18 @@ use syntect::highlighting::Theme;
 /// not catch it; this budget bounds the total work instead.
 const REPLAY_BUDGET: usize = 200_000;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Why background tools are being asked to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    Open,
+    Save,
+    /// Typing paused.
+    Change,
+    /// `:check`, which ignores the per-trigger settings.
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageKind {
     Info,
     Error,
@@ -128,6 +140,15 @@ pub struct App {
     /// Guest count when sharing, for the status line. Kept separately because
     /// the session itself is checked out while frames are drawn.
     pub shared_guests: Option<usize>,
+    /// Background external tools.
+    pub runner: crate::external::Runner,
+    pub checkers: Vec<crate::diagnostics::Checker>,
+    pub formatters: Vec<crate::format::Formatter>,
+    /// When the buffer last changed, so background work waits for a pause in
+    /// typing rather than running on every keystroke.
+    last_change: Option<Instant>,
+    /// Tools already reported as missing, so the message appears once.
+    reported_missing: HashSet<String>,
 }
 
 impl App {
@@ -178,6 +199,11 @@ impl App {
             remote_cursors: Vec::new(),
             rendering_as: crate::session::HOST_ID,
             shared_guests: None,
+            runner: crate::external::Runner::default(),
+            checkers: Vec::new(),
+            formatters: Vec::new(),
+            last_change: None,
+            reported_missing: HashSet::new(),
         };
 
         if files.is_empty() {
@@ -205,6 +231,10 @@ impl App {
                 "unknown theme {name:?}; using base16-ocean.dark (see :help)"
             ));
         }
+        app.rebuild_tools();
+        for index in 0..app.buffers.len() {
+            app.refresh_buffer(index, Trigger::Open);
+        }
         if let Some(line) = goto_line {
             let last = app.buffer().line_count().saturating_sub(1);
             let target = line.saturating_sub(1).min(last);
@@ -226,6 +256,227 @@ impl App {
 
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffers[self.current]
+    }
+
+    /// Compile the configured checkers and formatters. The user's entries come
+    /// first so they win the first-match lookup, then the built-ins fill in
+    /// filetypes the user did not mention.
+    pub fn rebuild_tools(&mut self) {
+        let mut problems = Vec::new();
+
+        let mut checker_configs = self.config.diagnostics.checker.clone();
+        if self.config.diagnostics.use_builtin {
+            checker_configs.extend(crate::diagnostics::builtin_checkers());
+        }
+        self.checkers = checker_configs
+            .iter()
+            .filter_map(
+                |config| match crate::diagnostics::Checker::compile(config) {
+                    Ok(checker) => Some(checker),
+                    Err(e) => {
+                        problems.push(e);
+                        None
+                    }
+                },
+            )
+            .collect();
+
+        let mut formatter_configs = self.config.format.formatter.clone();
+        if self.config.format.use_builtin {
+            formatter_configs.extend(crate::format::builtin_formatters());
+        }
+        self.formatters = formatter_configs
+            .iter()
+            .filter_map(|config| match crate::format::Formatter::compile(config) {
+                Ok(formatter) => Some(formatter),
+                Err(e) => {
+                    problems.push(e);
+                    None
+                }
+            })
+            .collect();
+
+        if let Some(first) = problems.first() {
+            self.set_error(first.clone());
+        }
+    }
+
+    /// Note that the text changed, restarting the debounce.
+    pub fn note_change(&mut self) {
+        self.last_change = Some(Instant::now());
+    }
+
+    /// Start the checkers and the git diff for one buffer.
+    ///
+    /// The trigger decides what runs: the configuration says whether checkers
+    /// follow an open, a save or a pause in typing, while `Manual` is `:check`
+    /// and always runs everything.
+    pub fn refresh_buffer(&mut self, index: usize, trigger: Trigger) {
+        if index >= self.buffers.len() {
+            return;
+        }
+        let revision = self.buffers[index].history.revision();
+        let (id, name, path, syntax_name) = {
+            let buffer = &self.buffers[index];
+            (
+                buffer.id,
+                buffer.short_name(),
+                buffer.path.clone(),
+                buffer.syntax_name.clone(),
+            )
+        };
+        let text: String = self.buffers[index].rope.chars().collect();
+        let directory = path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf);
+
+        let diagnostics = &self.config.diagnostics;
+        let check = diagnostics.enabled
+            && match trigger {
+                Trigger::Manual => true,
+                Trigger::Open => diagnostics.on_open,
+                Trigger::Save => diagnostics.on_save,
+                Trigger::Change => diagnostics.on_change,
+            };
+        let force = trigger == Trigger::Manual;
+
+        let snapshot = crate::external::Snapshot {
+            buffer_id: id,
+            revision,
+            name,
+            text,
+            directory,
+            timeout: Duration::from_millis(self.config.diagnostics.timeout_ms),
+        };
+
+        if check && (force || self.buffers[index].checked_revision != Some(revision)) {
+            self.buffers[index].checked_revision = Some(revision);
+            let applicable: Vec<crate::diagnostics::Checker> = self
+                .checkers
+                .iter()
+                .filter(|checker| checker.applies_to(&syntax_name, path.as_deref()))
+                .filter(|checker| !self.reported_missing.contains(&checker.command[0]))
+                .cloned()
+                .collect();
+            for checker in applicable {
+                self.runner.check(checker, snapshot.clone());
+            }
+        }
+
+        if self.config.signs.enabled && self.config.signs.git {
+            if let Some(path) = path {
+                if force || self.buffers[index].diffed_revision != Some(revision) {
+                    self.buffers[index].diffed_revision = Some(revision);
+                    self.runner.diff(path, snapshot);
+                }
+            }
+        }
+    }
+
+    /// Once typing pauses, refresh whatever follows a change.
+    pub fn tick_background(&mut self) -> bool {
+        let Some(changed_at) = self.last_change else {
+            return false;
+        };
+        let debounce = Duration::from_millis(self.config.diagnostics.debounce_ms.max(50));
+        if changed_at.elapsed() < debounce {
+            return false;
+        }
+        self.last_change = None;
+        self.refresh_buffer(self.current, Trigger::Change);
+        false
+    }
+
+    /// Apply whatever the background tools have finished.
+    pub fn poll_background(&mut self) -> bool {
+        let finished = self.runner.poll();
+        if finished.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        for item in finished {
+            match item {
+                crate::external::Finished::Checked {
+                    buffer_id,
+                    revision,
+                    tool,
+                    result,
+                } => {
+                    let Some(index) = self.buffers.iter().position(|b| b.id == buffer_id) else {
+                        continue;
+                    };
+                    // Discard results for text that has since changed.
+                    if self.buffers[index].history.revision() != revision {
+                        continue;
+                    }
+                    match result {
+                        Ok(items) => {
+                            self.buffers[index].diagnostics.replace(&tool, items);
+                            changed = true;
+                        }
+                        Err(failure) => {
+                            let key = tool.clone();
+                            if failure.missing {
+                                if self.reported_missing.insert(key) {
+                                    self.set_message(failure.message);
+                                    changed = true;
+                                }
+                            } else {
+                                self.set_error(failure.message);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                crate::external::Finished::Diffed {
+                    buffer_id,
+                    revision,
+                    result,
+                } => {
+                    let Some(index) = self.buffers.iter().position(|b| b.id == buffer_id) else {
+                        continue;
+                    };
+                    if self.buffers[index].history.revision() != revision {
+                        continue;
+                    }
+                    if let Ok(statuses) = result {
+                        self.buffers[index].line_statuses = statuses;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Strip trailing spaces and tabs from every line, as one undo step.
+    pub fn trim_trailing_whitespace(&mut self) -> usize {
+        let mut trimmed = 0;
+        let lines = self.buffer().line_count();
+        self.buffer_mut().begin();
+        for line in (0..lines).rev() {
+            let content = text::line(&self.buffer().rope, line);
+            let length = content.len_chars();
+            let kept = content
+                .chars()
+                .collect::<Vec<char>>()
+                .iter()
+                .rposition(|c| *c != ' ' && *c != '\t')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if kept < length {
+                let start = self.buffer().rope.line_to_char(line) + kept;
+                let end = start + (length - kept);
+                self.buffer_mut().remove(start, end);
+                trimmed += 1;
+            }
+        }
+        self.buffer_mut().end();
+        if trimmed > 0 {
+            self.clamp_cursor();
+        }
+        trimmed
     }
 
     pub fn edit_options(&self) -> EditOptions {
@@ -271,14 +522,25 @@ impl App {
         }
     }
 
-    pub fn gutter_width(&self) -> usize {
+    /// Width of the sign column, which diagnostics and git status share.
+    pub fn sign_width(&self) -> usize {
+        let signs = &self.config.signs;
+        if signs.enabled && (signs.diagnostics || signs.git) {
+            2
+        } else {
+            0
+        }
+    }
+
+    pub fn number_width(&self) -> usize {
         match self.config.editor.line_numbers {
             LineNumbers::None => 0,
-            _ => {
-                let digits = self.buffer().line_count().to_string().len().max(3);
-                digits + 2
-            }
+            _ => self.buffer().line_count().to_string().len().max(3) + 2,
         }
+    }
+
+    pub fn gutter_width(&self) -> usize {
+        self.sign_width() + self.number_width()
     }
 
     /// Keep the cursor inside the viewport, honouring `scrolloff`.
@@ -357,6 +619,7 @@ impl App {
         };
         self.current = index;
         self.detect_syntax(index);
+        self.refresh_buffer(index, Trigger::Open);
         let name = self.buffer().display_name();
         if is_new {
             self.set_message(format!("\"{name}\" [New]"));

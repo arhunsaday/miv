@@ -14,6 +14,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
+use regex::Regex;
+use std::sync::OnceLock;
 
 /// Colours pulled from the syntect theme so the chrome matches the text.
 struct Palette {
@@ -165,11 +167,25 @@ fn draw_text(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, gu
             };
 
         let mut spans: Vec<Span> = Vec::new();
-        if gutter > 0 {
-            spans.push(gutter_span(app, palette, line_index, cursor.line, gutter));
+        if app.sign_width() > 0 {
+            spans.push(sign_span(app, line_index, row_background));
+        }
+        if app.number_width() > 0 {
+            spans.push(number_span(
+                app,
+                palette,
+                line_index,
+                cursor.line,
+                app.number_width(),
+            ));
         }
 
         let content = text::line(&app.buffer().rope, line_index);
+        let swatches = if app.config.appearance.color_swatches {
+            color_swatches(&content.chars().collect::<String>())
+        } else {
+            Vec::new()
+        };
         let line_highlights = highlights.get(line_index.saturating_sub(view_top));
         let search_matches = if app.search_highlight && app.search.is_active() {
             app.search.matches_on_line(&app.buffer().rope, line_index)
@@ -210,6 +226,14 @@ fn draw_text(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, gu
                 style = style.bg(background);
             } else if palette.background != Color::Reset {
                 style = style.bg(palette.background);
+            }
+
+            // A colour literal is painted in the colour it names.
+            if let Some((_, _, swatch)) = swatches
+                .iter()
+                .find(|(start, end, _)| column >= *start && column < *end)
+            {
+                style = style.bg(*swatch).fg(contrast(*swatch));
             }
 
             if search_matches
@@ -311,6 +335,33 @@ fn draw_text(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, gu
             }
         }
 
+        // The cursor line's diagnostic, written after the text so it never
+        // shifts the code it describes.
+        if app.config.diagnostics.virtual_text && is_cursor_line {
+            if let Some(diagnostic) = app.buffer().diagnostics.on_line(line_index).first() {
+                let message: String = diagnostic
+                    .message
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                let label = format!(
+                    "  {} {} [{}]",
+                    diagnostic.severity.sign(),
+                    message,
+                    diagnostic.source
+                );
+                let room = width.saturating_sub(gutter + emitted);
+                let label: String = label.chars().take(room).collect();
+                emitted += label.chars().count();
+                spans.push(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(diagnostic.severity.color())
+                        .add_modifier(Modifier::DIM),
+                ));
+            }
+        }
+
         // Extend the cursor line's highlight across the rest of the row.
         if let Some(background) = row_background {
             let remaining = width.saturating_sub(gutter + emitted);
@@ -328,12 +379,36 @@ fn draw_text(frame: &mut Frame, area: Rect, app: &mut App, palette: &Palette, gu
     frame.render_widget(Paragraph::new(rows), area);
 }
 
-fn gutter_span<'a>(
+/// The sign column, shared by diagnostics and git status. A diagnostic wins:
+/// knowing a line is broken matters more than knowing it changed.
+fn sign_span<'a>(app: &App, line_index: usize, row_background: Option<Color>) -> Span<'a> {
+    let mut style = Style::default();
+    if let Some(background) = row_background {
+        style = style.bg(background);
+    }
+
+    if app.config.signs.diagnostics {
+        if let Some(severity) = app.buffer().diagnostics.worst_on_line(line_index) {
+            return Span::styled(
+                format!("{} ", severity.sign()),
+                style.fg(severity.color()).add_modifier(Modifier::BOLD),
+            );
+        }
+    }
+    if app.config.signs.git {
+        if let Some(status) = app.buffer().line_statuses.get(&line_index) {
+            return Span::styled(format!("{} ", status.sign()), style.fg(status.color()));
+        }
+    }
+    Span::styled("  ", style)
+}
+
+fn number_span<'a>(
     app: &App,
     palette: &Palette,
     line_index: usize,
     cursor_line: usize,
-    gutter: usize,
+    width: usize,
 ) -> Span<'a> {
     let is_cursor_line = line_index == cursor_line;
     let label = match app.config.editor.line_numbers {
@@ -354,7 +429,7 @@ fn gutter_span<'a>(
             }
         }
     };
-    let text = format!("{:>width$}  ", label, width = gutter.saturating_sub(2));
+    let text = format!("{:>width$}  ", label, width = width.saturating_sub(2));
     let mut style = Style::default().fg(if is_cursor_line {
         palette.line_number_active
     } else {
@@ -369,6 +444,74 @@ fn gutter_span<'a>(
         style = style.bg(palette.background);
     }
     Span::styled(text, style)
+}
+
+/// Colour literals in the line, as character ranges plus the colour they name.
+fn color_swatches(line: &str) -> Vec<(usize, usize, Color)> {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        // The closing paren is required: letting it be optional made the
+        // match run on past the colour and swallow the rest of the line.
+        Regex::new(
+            r"(?i)#[0-9a-f]{8}\b|#[0-9a-f]{6}\b|#[0-9a-f]{3}\b|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,[^)]*)?\)",
+        )
+            .expect("a valid colour pattern")
+    });
+
+    let mut found = Vec::new();
+    for matched in pattern.find_iter(line) {
+        let Some(color) = parse_color(matched.as_str()) else {
+            continue;
+        };
+        let start = line[..matched.start()].chars().count();
+        let end = start + matched.as_str().chars().count();
+        found.push((start, end, color));
+    }
+    found
+}
+
+fn parse_color(text: &str) -> Option<Color> {
+    let text = text.trim();
+    if let Some(hex) = text.strip_prefix('#') {
+        let digits: Vec<u8> = hex
+            .chars()
+            .filter_map(|c| c.to_digit(16).map(|d| d as u8))
+            .collect();
+        return match digits.len() {
+            // #rgb expands each digit, as CSS does.
+            3 => Some(Color::Rgb(digits[0] * 17, digits[1] * 17, digits[2] * 17)),
+            6 | 8 => Some(Color::Rgb(
+                digits[0] * 16 + digits[1],
+                digits[2] * 16 + digits[3],
+                digits[4] * 16 + digits[5],
+            )),
+            _ => None,
+        };
+    }
+    let inner = text.split_once('(')?.1;
+    let inner = inner.split_once(')').map(|(head, _)| head).unwrap_or(inner);
+    let parts: Vec<u8> = inner
+        .split(',')
+        .take(3)
+        .filter_map(|part| part.trim().parse::<u16>().ok())
+        .map(|value| value.min(255) as u8)
+        .collect();
+    (parts.len() == 3).then(|| Color::Rgb(parts[0], parts[1], parts[2]))
+}
+
+/// Readable text over a swatch.
+fn contrast(color: Color) -> Color {
+    let (r, g, b) = match color {
+        Color::Rgb(r, g, b) => (r as u32, g as u32, b as u32),
+        _ => return Color::Reset,
+    };
+    // Rough perceptual luminance; exact enough to pick black or white.
+    let luminance = (r * 299 + g * 587 + b * 114) / 1000;
+    if luminance > 140 {
+        Color::Black
+    } else {
+        Color::White
+    }
 }
 
 fn place_cursor(frame: &mut Frame, area: Rect, app: &App, gutter: usize) {
@@ -478,6 +621,20 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, palette: &Palette) {
     );
 
     let mut middle = String::new();
+    let (errors, warnings, infos) = buffer.diagnostics.counts();
+    if errors + warnings + infos > 0 {
+        let mut parts = Vec::new();
+        if errors > 0 {
+            parts.push(format!("{errors}E"));
+        }
+        if warnings > 0 {
+            parts.push(format!("{warnings}W"));
+        }
+        if infos > 0 {
+            parts.push(format!("{infos}I"));
+        }
+        middle.push_str(&format!("{}  ", parts.join(" ")));
+    }
     if let Some(guests) = app.shared_guests {
         middle.push_str(&format!(
             "shared · {guests} guest{}  ",
@@ -617,5 +774,73 @@ pub fn cursor_style(mode: Mode) -> crossterm::cursor::SetCursorStyle {
         Mode::Insert => SetCursorStyle::BlinkingBar,
         Mode::Replace => SetCursorStyle::BlinkingUnderScore,
         _ => SetCursorStyle::SteadyBlock,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_colours_are_recognised() {
+        assert_eq!(parse_color("#ff0000"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("#00FF80"), Some(Color::Rgb(0, 255, 128)));
+        // Three digits expand the way CSS says they do.
+        assert_eq!(parse_color("#f0a"), Some(Color::Rgb(255, 0, 170)));
+        // An alpha channel is accepted and ignored.
+        assert_eq!(parse_color("#ff000080"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("#ff00"), None);
+    }
+
+    #[test]
+    fn functional_colours_are_recognised() {
+        assert_eq!(
+            parse_color("rgb(0, 128, 255)"),
+            Some(Color::Rgb(0, 128, 255))
+        );
+        assert_eq!(parse_color("rgb(1,2,3)"), Some(Color::Rgb(1, 2, 3)));
+        assert_eq!(
+            parse_color("rgba(10, 20, 30, 0.5)"),
+            Some(Color::Rgb(10, 20, 30))
+        );
+        // Out-of-range components are clamped rather than rejected.
+        assert_eq!(parse_color("rgb(999, 0, 0)"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("rgb(1, 2)"), None);
+    }
+
+    #[test]
+    fn swatches_cover_exactly_the_colour_they_name() {
+        // Regression: the pattern used to run past the closing paren and
+        // swallow the rest of the line, which made rgb() fail to parse.
+        let line = "b { color: rgb(0, 128, 255); }";
+        let found = color_swatches(line);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let (start, end, color) = found[0];
+        assert_eq!(&line[start..end], "rgb(0, 128, 255)");
+        assert_eq!(color, Color::Rgb(0, 128, 255));
+    }
+
+    #[test]
+    fn several_swatches_on_one_line_are_found() {
+        let line = "border: 1px solid #abc; background: #00ff00;";
+        let found = color_swatches(line);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(&line[found[0].0..found[0].1], "#abc");
+        assert_eq!(&line[found[1].0..found[1].1], "#00ff00");
+    }
+
+    #[test]
+    fn things_that_merely_look_like_colours_are_left_alone() {
+        assert!(color_swatches("let x = 123456;").is_empty());
+        assert!(color_swatches("# heading").is_empty());
+        assert!(color_swatches("rgb(a, b, c)").is_empty());
+    }
+
+    #[test]
+    fn swatch_text_stays_readable() {
+        assert_eq!(contrast(Color::Rgb(255, 255, 255)), Color::Black);
+        assert_eq!(contrast(Color::Rgb(0, 0, 0)), Color::White);
+        assert_eq!(contrast(Color::Rgb(255, 255, 0)), Color::Black);
+        assert_eq!(contrast(Color::Rgb(0, 0, 160)), Color::White);
     }
 }
