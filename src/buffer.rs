@@ -48,6 +48,14 @@ pub struct Buffer {
     pub syntax_cache: SyntaxCache,
     /// Named a file that does not exist yet.
     pub is_new_file: bool,
+    /// Findings from the external checkers, kept per tool.
+    pub diagnostics: crate::diagnostics::Diagnostics,
+    /// Lines that differ from git HEAD.
+    pub line_statuses: crate::vcs::LineStatuses,
+    /// Revisions the checkers and the git diff last ran against, so neither
+    /// repeats work nor shows a result for text that has since changed.
+    pub checked_revision: Option<usize>,
+    pub diffed_revision: Option<usize>,
     /// Splices applied since the last drain. A shared session uses these to
     /// move every other participant's cursor along with the text, so their
     /// caret stays on the character it was pointing at.
@@ -73,6 +81,10 @@ impl Buffer {
             syntax_name: "Plain Text".to_string(),
             syntax_cache: SyntaxCache::default(),
             is_new_file: false,
+            diagnostics: crate::diagnostics::Diagnostics::default(),
+            line_statuses: crate::vcs::LineStatuses::new(),
+            checked_revision: None,
+            diffed_revision: None,
             edits: Vec::new(),
         }
     }
@@ -151,6 +163,16 @@ impl Buffer {
         std::mem::take(&mut self.edits)
     }
 
+    /// A marker for [`Buffer::edits_since`], so an operation can inspect its
+    /// own splices without draining the log a shared session depends on.
+    pub fn edit_mark(&self) -> usize {
+        self.edits.len()
+    }
+
+    pub fn edits_since(&self, mark: usize) -> &[Change] {
+        &self.edits[mark.min(self.edits.len())..]
+    }
+
     pub fn slice(&self, from: usize, to: usize) -> String {
         let end = to.min(self.rope.len_chars());
         let start = from.min(end);
@@ -204,7 +226,10 @@ impl Buffer {
             removed: removed.clone(),
             inserted: String::new(),
         });
-        self.ensure_trailing_newline();
+        // Only the outermost operation restores the invariant; see `end`.
+        if self.history.depth() == 1 {
+            self.ensure_trailing_newline();
+        }
         self.syntax_cache.invalidate_from(line);
         self.history.commit(self.cursor);
         removed
@@ -224,6 +249,13 @@ impl Buffer {
     }
 
     pub fn end(&mut self) {
+        // The trailing-newline invariant only has to hold between commands.
+        // Restoring it mid-command would fight the changes still to come: a
+        // remove-then-insert pair that empties the buffer in passing would
+        // otherwise gain a stray blank line.
+        if self.history.depth() == 1 {
+            self.ensure_trailing_newline();
+        }
         let cursor = self.cursor;
         self.history.commit(cursor);
     }

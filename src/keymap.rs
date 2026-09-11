@@ -35,6 +35,10 @@ pub enum Awaiting {
     ZPrefix,
     /// `ZZ` / `ZQ`.
     ZetPrefix,
+    /// `]` or `[` waiting for what to jump to.
+    BracketPrefix {
+        forward: bool,
+    },
     TextObject {
         scope: Scope,
     },
@@ -219,6 +223,8 @@ fn normal_char(app: &mut App, c: char) {
         '<' => operator_key(app, Operator::Dedent),
         'g' => app.pending.awaiting = Some(Awaiting::GPrefix),
         'z' => app.pending.awaiting = Some(Awaiting::ZPrefix),
+        ']' => app.pending.awaiting = Some(Awaiting::BracketPrefix { forward: true }),
+        '[' => app.pending.awaiting = Some(Awaiting::BracketPrefix { forward: false }),
         'Z' => app.pending.awaiting = Some(Awaiting::ZetPrefix),
 
         // Text objects, only meaningful after an operator or in visual mode.
@@ -620,6 +626,15 @@ fn handle_awaiting(app: &mut App, awaiting: Awaiting, key: KeyEvent) {
             match ch {
                 Some('Z') => command::execute(app, "x"),
                 Some('Q') => command::execute(app, "q!"),
+                _ => {}
+            }
+            app.pending.reset();
+        }
+        Awaiting::BracketPrefix { forward } => {
+            match ch {
+                Some('d') => goto_diagnostic(app, forward),
+                // `c` is Vim's diff-mode convention, `h` reads as "hunk".
+                Some('h') | Some('c') => goto_hunk(app, forward),
                 _ => {}
             }
             app.pending.reset();
@@ -1081,6 +1096,49 @@ fn search_word_under_cursor(app: &mut App) {
     app.search_highlight = true;
     push_jump(app);
     apply_motion(app, Motion::SearchNext { reverse: false });
+}
+
+// -- diagnostics and hunks --------------------------------------------------
+
+fn goto_diagnostic(app: &mut App, forward: bool) {
+    let line = app.buffer().cursor.line;
+    let target = app
+        .buffer()
+        .diagnostics
+        .next_from(line, forward)
+        .map(|diagnostic| {
+            (
+                diagnostic.line,
+                diagnostic.col.unwrap_or(0),
+                format!(
+                    "{} {} [{}]",
+                    diagnostic.severity.sign(),
+                    diagnostic.message,
+                    diagnostic.source
+                ),
+            )
+        });
+    match target {
+        Some((line, col, message)) => {
+            push_jump(app);
+            app.set_cursor(Position::new(line, col));
+            app.set_message(message);
+        }
+        None => app.set_error("no diagnostics"),
+    }
+}
+
+fn goto_hunk(app: &mut App, forward: bool) {
+    let line = app.buffer().cursor.line;
+    let target = crate::vcs::next_hunk(&app.buffer().line_statuses, line, forward);
+    match target {
+        Some(line) => {
+            push_jump(app);
+            let col = text::first_non_blank(&app.buffer().rope, line);
+            app.set_cursor(Position::new(line, col));
+        }
+        None => app.set_error("no changes against HEAD"),
+    }
 }
 
 // -- jump list --------------------------------------------------------------
