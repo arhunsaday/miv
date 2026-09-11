@@ -37,7 +37,7 @@ impl Severity {
         match self {
             Severity::Error => "●",
             Severity::Warning => "▲",
-            Severity::Info => "•",
+            Severity::Info => "?",
         }
     }
 

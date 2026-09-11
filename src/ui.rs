@@ -691,21 +691,6 @@ fn draw_message(frame: &mut Frame, area: Rect, app: &App, palette: &Palette) {
         );
         return;
     }
-
-    let hint = match app.mode {
-        Mode::Insert => "-- INSERT --",
-        Mode::Replace => "-- REPLACE --",
-        Mode::Visual(VisualKind::Char) => "-- VISUAL --",
-        Mode::Visual(VisualKind::Line) => "-- VISUAL LINE --",
-        _ => "",
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            hint,
-            Style::default().add_modifier(Modifier::BOLD),
-        ))),
-        area,
-    );
 }
 
 fn place_prompt_cursor(frame: &mut Frame, area: Rect, app: &App) {
