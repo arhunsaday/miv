@@ -716,6 +716,545 @@ fn key_notation_round_trips() {
     assert_eq!(keys::encode_all(&parsed), input);
 }
 
+// -- diagnostics, formatting and signs --------------------------------------
+
+fn scratch_dir(label: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "miv-{label}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+/// An executable stand-in for a real checker, so the pipeline can be tested
+/// without depending on what happens to be installed.
+fn fake_checker(directory: &std::path::Path, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = directory.join("fake-checker");
+    std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+fn inject_diagnostics(app: &mut App, lines: &[(usize, crate::diagnostics::Severity)]) {
+    let items = lines
+        .iter()
+        .map(|(line, severity)| crate::diagnostics::Diagnostic {
+            line: *line,
+            col: None,
+            severity: *severity,
+            message: format!("problem on line {}", line + 1),
+            source: "test".to_string(),
+        })
+        .collect();
+    app.buffer_mut().diagnostics.replace("test", items);
+}
+
+/// Wait for background tools to deliver, since they run on their own threads.
+fn settle(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if app.poll_background() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn formatting_applies_a_minimal_diff_and_keeps_the_cursor() {
+    let mut app = app_with(
+        "one
+two
+three
+four",
+    );
+    press(&mut app, "jj$");
+    let before = cursor(&app);
+
+    // Only the second line differs.
+    crate::format::apply(
+        &mut app,
+        "one
+two
+three
+four
+",
+        "one
+TWO
+three
+four
+",
+    );
+    assert_eq!(
+        content(&app),
+        "one
+TWO
+three
+four
+"
+    );
+    assert_eq!(cursor(&app), before, "the cursor should not move");
+
+    // ...and the whole reformat is a single undo step.
+    press(&mut app, "u");
+    assert_eq!(
+        content(&app),
+        "one
+two
+three
+four
+"
+    );
+}
+
+#[test]
+fn formatting_moves_the_cursor_along_with_inserted_lines() {
+    let mut app = app_with(
+        "a
+b
+c",
+    );
+    press(&mut app, "G");
+    assert_eq!(cursor(&app), (2, 0));
+    crate::format::apply(
+        &mut app,
+        "a
+b
+c
+",
+        "a
+new
+b
+c
+",
+    );
+    assert_eq!(
+        content(&app),
+        "a
+new
+b
+c
+"
+    );
+    assert_eq!(
+        cursor(&app),
+        (3, 0),
+        "the cursor should follow its line down"
+    );
+}
+
+#[test]
+fn formatting_with_a_real_tool() {
+    let directory = scratch_dir("fmt");
+    let path = directory.join("sample.rs");
+    std::fs::write(&path, "fn  main( ){let x=1;println!(\"{}\",x);}\n").unwrap();
+
+    let mut app = App::new(Config::default(), &[path.clone()], None).unwrap();
+    app.viewport = Viewport {
+        height: 20,
+        text_width: 80,
+    };
+    press(&mut app, ":fmt<CR>");
+
+    let formatted = content(&app);
+    assert!(formatted.contains("fn main() {"), "{formatted}");
+    assert!(formatted.contains("    let x = 1;"), "{formatted}");
+
+    // Formatting an already-formatted buffer changes nothing and says so.
+    press(&mut app, ":fmt<CR>");
+    assert_eq!(content(&app), formatted);
+    assert!(app.message.as_ref().unwrap().text.contains("already"));
+
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn formatting_reports_when_nothing_is_configured() {
+    let mut app = app_with("plain text");
+    press(&mut app, ":fmt<CR>");
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.contains("no formatter"), "{message}");
+}
+
+#[test]
+fn format_on_save_runs_before_the_write() {
+    let directory = scratch_dir("fos");
+    let path = directory.join("sample.rs");
+    std::fs::write(&path, "fn  main( ){}\n").unwrap();
+
+    let mut app = App::new(Config::default(), &[path.clone()], None).unwrap();
+    app.viewport = Viewport {
+        height: 20,
+        text_width: 80,
+    };
+    app.config.format.on_save = true;
+    press(&mut app, ":w<CR>");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(on_disk, "fn main() {}\n", "the file should be formatted");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn save_hygiene_is_opt_in() {
+    let directory = scratch_dir("hygiene");
+    let path = directory.join("messy.txt");
+    std::fs::write(&path, "trailing   \nspaces\t\n").unwrap();
+
+    // By default the file round-trips untouched.
+    let mut app = App::new(Config::default(), &[path.clone()], None).unwrap();
+    app.viewport = Viewport {
+        height: 20,
+        text_width: 80,
+    };
+    press(&mut app, ":w<CR>");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "trailing   \nspaces\t\n"
+    );
+
+    // Turned on, it cleans up.
+    app.config.editor.trim_trailing_whitespace = true;
+    press(&mut app, ":w<CR>");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "trailing\nspaces\n"
+    );
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn ensure_final_newline_overrides_the_round_trip() {
+    let directory = scratch_dir("newline");
+    let path = directory.join("bare.txt");
+    std::fs::write(&path, "no newline").unwrap();
+
+    let mut app = App::new(Config::default(), &[path.clone()], None).unwrap();
+    app.viewport = Viewport {
+        height: 20,
+        text_width: 80,
+    };
+    app.config.editor.ensure_final_newline = true;
+    press(&mut app, ":w<CR>");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "no newline\n");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn trimming_whitespace_is_one_undo_step_and_leaves_the_cursor_valid() {
+    let mut app = app_with(
+        "a   
+b		
+c",
+    );
+    press(&mut app, "jj$");
+    let trimmed = app.trim_trailing_whitespace();
+    assert_eq!(trimmed, 2);
+    assert_eq!(
+        content(&app),
+        "a
+b
+c
+"
+    );
+    press(&mut app, "u");
+    assert_eq!(
+        content(&app),
+        "a   
+b		
+c
+"
+    );
+}
+
+#[test]
+fn diagnostic_navigation_visits_each_one_and_wraps() {
+    use crate::diagnostics::Severity;
+    let mut app = app_with(
+        "1
+2
+3
+4
+5
+6
+7
+8",
+    );
+    inject_diagnostics(&mut app, &[(2, Severity::Error), (5, Severity::Warning)]);
+
+    press(&mut app, "]d");
+    assert_eq!(cursor(&app), (2, 0));
+    assert!(app.message.as_ref().unwrap().text.contains("line 3"));
+    press(&mut app, "]d");
+    assert_eq!(cursor(&app), (5, 0));
+    press(&mut app, "]d");
+    assert_eq!(cursor(&app), (2, 0), "should wrap");
+    press(&mut app, "[d");
+    assert_eq!(cursor(&app), (5, 0), "should wrap backwards");
+}
+
+#[test]
+fn diagnostic_navigation_says_so_when_there_are_none() {
+    let mut app = app_with(
+        "clean
+",
+    );
+    press(&mut app, "]d");
+    assert!(app
+        .message
+        .as_ref()
+        .unwrap()
+        .text
+        .contains("no diagnostics"));
+    assert_eq!(cursor(&app), (0, 0));
+}
+
+#[test]
+fn hunk_navigation_walks_the_changes_against_head() {
+    use crate::vcs::LineStatus;
+    let mut app = app_with(
+        "1
+2
+3
+4
+5
+6
+7
+8",
+    );
+    {
+        let statuses = &mut app.buffer_mut().line_statuses;
+        statuses.insert(1, LineStatus::Added);
+        statuses.insert(2, LineStatus::Added);
+        statuses.insert(6, LineStatus::Modified);
+    }
+    press(&mut app, "]h");
+    assert_eq!(cursor(&app), (1, 0));
+    press(&mut app, "]h");
+    assert_eq!(cursor(&app), (6, 0));
+    press(&mut app, "]c");
+    assert_eq!(cursor(&app), (1, 0), "]c is an alias and should wrap");
+    press(&mut app, "[h");
+    assert_eq!(cursor(&app), (6, 0));
+}
+
+#[test]
+fn hunk_navigation_says_so_when_the_file_matches_head() {
+    let mut app = app_with(
+        "unchanged
+",
+    );
+    press(&mut app, "]h");
+    assert!(app.message.as_ref().unwrap().text.contains("no changes"));
+}
+
+#[test]
+fn the_diagnostic_list_shows_everything_with_a_summary() {
+    use crate::diagnostics::Severity;
+    let mut app = app_with(
+        "1
+2
+3
+4",
+    );
+    press(&mut app, ":diag<CR>");
+    assert!(app.overlay.is_none());
+    assert!(app
+        .message
+        .as_ref()
+        .unwrap()
+        .text
+        .contains("no diagnostics"));
+
+    inject_diagnostics(&mut app, &[(0, Severity::Error), (3, Severity::Warning)]);
+    press(&mut app, ":diag<CR>");
+    let overlay = app.overlay.as_ref().expect("an overlay");
+    assert!(overlay.title.contains("1 error(s)"), "{}", overlay.title);
+    assert!(overlay.title.contains("1 warning(s)"), "{}", overlay.title);
+    assert_eq!(overlay.lines.len(), 2);
+    assert!(overlay.lines[0].contains("error"));
+    assert!(overlay.lines[1].contains("warning"));
+}
+
+#[test]
+fn the_sign_column_takes_room_only_when_it_is_on() {
+    let mut app = app_with(
+        "a
+",
+    );
+    let with_signs = app.gutter_width();
+    assert_eq!(app.sign_width(), 2);
+
+    app.config.signs.enabled = false;
+    assert_eq!(app.sign_width(), 0);
+    assert_eq!(app.gutter_width(), with_signs - 2);
+
+    // Line numbers and signs are independent.
+    app.config.signs.enabled = true;
+    app.config.editor.line_numbers = crate::config::LineNumbers::None;
+    assert_eq!(app.number_width(), 0);
+    assert_eq!(app.gutter_width(), 2);
+}
+
+#[test]
+fn set_toggles_the_new_features_at_runtime() {
+    use crate::diagnostics::Severity;
+    let mut app = app_with(
+        "a
+",
+    );
+    inject_diagnostics(&mut app, &[(0, Severity::Error)]);
+
+    press(&mut app, ":set nodiagnostics<CR>");
+    assert!(!app.config.diagnostics.enabled);
+    assert!(
+        app.buffer().diagnostics.is_empty(),
+        "turning diagnostics off should drop stale findings"
+    );
+
+    press(&mut app, ":set nogitsigns nosigns nvt<CR>");
+    assert!(!app.config.signs.git);
+    assert!(!app.config.signs.enabled);
+
+    press(&mut app, ":set fos<CR>");
+    assert!(app.config.format.on_save);
+    press(&mut app, ":set formatonsave?<CR>");
+    assert!(app.message.as_ref().unwrap().text.contains("true"));
+
+    press(&mut app, ":set noswatches<CR>");
+    assert!(!app.config.appearance.color_swatches);
+}
+
+#[test]
+fn a_configured_checker_runs_and_its_findings_reach_the_buffer() {
+    let directory = scratch_dir("checker");
+    let script = fake_checker(
+        &directory,
+        "echo \"$1:2:5: [error] deliberately broken\"\necho \"$1:4:1: [warning] also this\"",
+    );
+    let path = directory.join("deploy.yaml");
+    std::fs::write(&path, "replicas: 1\ncontainers: 2\nimages: 3\nports: 4\n").unwrap();
+
+    let mut configuration = Config::default();
+    configuration.diagnostics.use_builtin = false;
+    configuration.diagnostics.checker = vec![crate::config::CheckerConfig {
+        name: Some("fake".to_string()),
+        command: vec![script.display().to_string(), "$FILE".to_string()],
+        pattern: r"^[^:]*:(?<line>\d+):(?<col>\d+):\s*\[(?<severity>\w+)\]\s*(?<message>.*)$"
+            .to_string(),
+        ..Default::default()
+    }];
+
+    let mut app = App::new(configuration, &[path], None).unwrap();
+    app.viewport = Viewport {
+        height: 20,
+        text_width: 80,
+    };
+    settle(&mut app);
+
+    let found = app.buffer().diagnostics.sorted();
+    assert_eq!(found.len(), 2, "got {found:?}");
+    assert_eq!(found[0].line, 1);
+    assert_eq!(found[0].col, Some(4));
+    assert_eq!(found[0].severity, crate::diagnostics::Severity::Error);
+    assert_eq!(found[0].message, "deliberately broken");
+    assert_eq!(found[0].source, "fake");
+    assert_eq!(
+        app.buffer().diagnostics.worst_on_line(1),
+        Some(crate::diagnostics::Severity::Error)
+    );
+
+    // And navigation reaches them, column included.
+    press(&mut app, "]d");
+    assert_eq!(cursor(&app), (1, 4));
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn results_for_text_that_has_since_changed_are_discarded() {
+    let directory = scratch_dir("stale");
+    // Slow enough that the buffer can change before it answers.
+    let script = fake_checker(
+        &directory,
+        "sleep 0.4
+echo \"$1:1:1: [error] stale\"",
+    );
+    let path = directory.join("slow.yaml");
+    std::fs::write(&path, "a: 1\n").unwrap();
+
+    let mut configuration = Config::default();
+    configuration.diagnostics.use_builtin = false;
+    configuration.diagnostics.checker = vec![crate::config::CheckerConfig {
+        name: Some("slow".to_string()),
+        command: vec![script.display().to_string(), "$FILE".to_string()],
+        pattern: r"^[^:]*:(?<line>\d+):(?<col>\d+):\s*\[(?<severity>\w+)\]\s*(?<message>.*)$"
+            .to_string(),
+        ..Default::default()
+    }];
+
+    let mut app = App::new(configuration, &[path], None).unwrap();
+    app.viewport = Viewport {
+        height: 20,
+        text_width: 80,
+    };
+
+    // Change the text while the checker is still thinking.
+    press(&mut app, "ox<Esc>");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        app.poll_background();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        app.buffer().diagnostics.is_empty(),
+        "a result from before the edit must not be shown against the new lines"
+    );
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn a_missing_tool_is_mentioned_once_and_then_left_alone() {
+    let mut configuration = Config::default();
+    configuration.diagnostics.use_builtin = false;
+    configuration.diagnostics.checker = vec![crate::config::CheckerConfig {
+        name: Some("ghost".to_string()),
+        command: vec!["miv-no-such-checker".to_string()],
+        pattern: r"(?<line>\d+)".to_string(),
+        ..Default::default()
+    }];
+
+    let mut app = App::new(configuration, &[], None).unwrap();
+    app.viewport = Viewport {
+        height: 20,
+        text_width: 80,
+    };
+    app.refresh_buffer(0, crate::app::Trigger::Manual);
+    settle(&mut app);
+
+    let message = app
+        .message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default();
+    assert!(message.contains("not installed"), "{message}");
+    assert_eq!(
+        app.message.as_ref().unwrap().kind,
+        crate::app::MessageKind::Info,
+        "a tool you have not installed is not an error"
+    );
+
+    // A second run says nothing more about it.
+    app.message = None;
+    app.refresh_buffer(0, crate::app::Trigger::Manual);
+    settle(&mut app);
+    assert!(app.message.is_none(), "should not complain twice");
+}
+
 // -- configuration ----------------------------------------------------------
 
 fn write_config(body: &str) -> std::path::PathBuf {
@@ -842,6 +1381,148 @@ max_participants = 0
     let error = format!("{:#}", crate::config::Config::load(&path).unwrap_err());
     assert!(error.contains("max_participants"), "{error}");
     std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn checkers_and_formatters_parse_from_configuration() {
+    let path = write_config(
+        r#"
+[diagnostics]
+enabled = true
+on_save = true
+on_change = true
+debounce_ms = 250
+timeout_ms = 1500
+virtual_text = false
+use_builtin = false
+
+[[diagnostics.checker]]
+name = "yamllint"
+command = ["yamllint", "-f", "parsable", "$FILE"]
+pattern = "^[^:]*:(?<line>\\d+):(?<col>\\d+): \\[(?<severity>\\w+)\\] (?<message>.*)$"
+severity = "warning"
+extensions = ["yml", "yaml"]
+
+[[diagnostics.checker]]
+command = ["mycheck"]
+pattern = "(?<line>\\d+)"
+filetypes = ["Rust"]
+
+[format]
+on_save = true
+timeout_ms = 900
+
+[[format.formatter]]
+command = ["rustfmt", "--emit", "stdout"]
+extensions = ["rs"]
+
+[signs]
+enabled = true
+diagnostics = false
+git = true
+"#,
+    );
+    let config = crate::config::Config::load(&path).expect("should parse");
+    assert_eq!(config.diagnostics.checker.len(), 2);
+    assert_eq!(config.diagnostics.checker[0].display_name(), "yamllint");
+    // A checker with no explicit name is known by its command.
+    assert_eq!(config.diagnostics.checker[1].display_name(), "mycheck");
+    assert!(config.diagnostics.on_change);
+    assert_eq!(config.diagnostics.debounce_ms, 250);
+    assert!(!config.diagnostics.virtual_text);
+    assert!(!config.diagnostics.use_builtin);
+    assert!(config.format.on_save);
+    assert_eq!(config.format.formatter.len(), 1);
+    assert!(!config.signs.diagnostics);
+    assert!(config.signs.git);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn a_broken_checker_is_rejected_when_the_file_loads() {
+    // Better to be told at startup than to wonder why nothing happens.
+    let path = write_config(
+        r#"
+[[diagnostics.checker]]
+command = ["x"]
+pattern = "no line group here"
+"#,
+    );
+    let error = format!("{:#}", crate::config::Config::load(&path).unwrap_err());
+    assert!(error.contains("line"), "{error}");
+
+    let path = write_config(
+        r#"
+[[diagnostics.checker]]
+pattern = "(?<line>[0-9]+)"
+"#,
+    );
+    let error = format!("{:#}", crate::config::Config::load(&path).unwrap_err());
+    assert!(error.contains("command"), "{error}");
+
+    let path = write_config(
+        r#"
+[[diagnostics.checker]]
+command = ["x"]
+pattern = "(?<line>[0-9]+"
+"#,
+    );
+    assert!(
+        crate::config::Config::load(&path).is_err(),
+        "an unparsable regex must be caught at load"
+    );
+
+    let path = write_config(
+        r#"
+[[format.formatter]]
+name = "empty"
+"#,
+    );
+    let error = format!("{:#}", crate::config::Config::load(&path).unwrap_err());
+    assert!(error.contains("command"), "{error}");
+
+    let path = write_config("[diagnostics]\nenabledd = true\n");
+    assert!(crate::config::Config::load(&path).is_err());
+
+    let path = write_config("[signs]\ngti = true\n");
+    assert!(crate::config::Config::load(&path).is_err());
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn the_documented_example_configuration_is_valid() {
+    // The example file is the documentation for every option, so it must keep
+    // parsing — including the checker patterns, which are validated on load.
+    let path = std::path::Path::new("example-config.toml");
+    let config = crate::config::Config::load(path)
+        .unwrap_or_else(|e| panic!("example-config.toml does not parse: {e:#}"));
+
+    // It documents the defaults, so it should agree with them.
+    let defaults = crate::config::Config::default();
+    assert_eq!(config.editor.line_numbers, defaults.editor.line_numbers);
+    assert_eq!(config.session.bind, defaults.session.bind);
+    assert_eq!(config.diagnostics.on_save, defaults.diagnostics.on_save);
+    assert_eq!(config.format.on_save, defaults.format.on_save);
+    assert_eq!(config.signs.git, defaults.signs.git);
+
+    // The sample checker and formatter blocks are commented out, so the file
+    // does not quietly configure tools nobody asked for.
+    assert!(config.diagnostics.checker.is_empty());
+    assert!(config.format.formatter.is_empty());
+}
+
+#[test]
+fn the_default_tooling_settings_are_unsurprising() {
+    let config = crate::config::Config::default();
+    // Reading a file should not run a formatter over it.
+    assert!(!config.format.on_save);
+    // Nor should saving silently rewrite bytes you did not touch.
+    assert!(!config.editor.trim_trailing_whitespace);
+    assert!(!config.editor.ensure_final_newline);
+    // Checking on save is useful and cheap; checking on every keystroke is not.
+    assert!(config.diagnostics.on_save);
+    assert!(!config.diagnostics.on_change);
+    assert!(config.signs.enabled);
 }
 
 #[test]

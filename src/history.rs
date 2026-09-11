@@ -59,6 +59,12 @@ impl History {
         self.depth += 1;
     }
 
+    /// How deeply transactions are nested. One means the outermost operation
+    /// is in progress.
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
     pub fn record(&mut self, change: Change) {
         if let Some(txn) = self.open.as_mut() {
             txn.changes.push(change);

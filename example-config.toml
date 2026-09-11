@@ -35,6 +35,13 @@ smart_case = true
 # Wrap around the end of the file when searching.
 wrap_search = true
 
+# Strip trailing spaces and tabs from every line when writing.
+trim_trailing_whitespace = false
+
+# Write a final newline even if the file arrived without one. Off by default so
+# files round-trip exactly as they were read.
+ensure_final_newline = false
+
 [appearance]
 # Any syntect theme; run `miv --list-themes` to see them all.
 theme = "base16-ocean.dark"
@@ -46,6 +53,9 @@ max_highlight_lines = 50000
 
 # Paint the theme's background colour instead of leaving your terminal's.
 theme_background = false
+
+# Paint #rrggbb and rgb(...) in the colour they name.
+color_swatches = true
 
 # Shared editing sessions (:share). Everything here is off until you run
 # :share — miv never opens a listener on its own.
@@ -75,3 +85,72 @@ show_remote_cursors = true
 # Let guests run `:` commands. Deliberately separate from write access:
 # editing text is a much smaller grant than `:w /some/other/path`.
 guest_commands = false
+
+# Diagnostics from external checkers.
+#
+# miv does not know what a YAML error is; it knows how to run a command and
+# read `file:line:col: message` out of its output. Anything following that
+# convention works.
+[diagnostics]
+enabled = true
+
+# Run the checkers after a write, when a file is opened, and/or once typing
+# pauses. On-change is off by default: running yamllint on every pause is a lot
+# of subprocesses.
+on_save = true
+on_open = true
+on_change = false
+debounce_ms = 400
+
+# Give up on a checker that takes longer than this.
+timeout_ms = 5000
+
+# Show the cursor line's diagnostic at the end of the line.
+virtual_text = true
+
+# Include the checkers miv ships with: yamllint, shellcheck, hadolint,
+# actionlint and jq. Your own entries below are tried first, and the built-ins
+# fill in the filetypes you did not mention. A tool you have not installed is
+# mentioned once and then ignored.
+use_builtin = true
+
+# Add your own. `pattern` must capture (?<line>...); it may also capture
+# `col`, `severity` and `message`. `$FILE` is replaced with a path to the
+# buffer's current contents — without it, the buffer arrives on stdin.
+# `$NAME` is the buffer's real name, for tools that pick a parser from it.
+#
+# [[diagnostics.checker]]
+# name = "kubeconform"
+# command = ["kubeconform", "-output", "tap", "$FILE"]
+# pattern = "^not ok \\d+ - (?<message>.*)$"
+# severity = "error"
+# extensions = ["yml", "yaml"]
+
+# Formatting through external tools.
+#
+# Formatters run synchronously, because you are waiting for the result. Their
+# output is applied as a minimal set of line splices, so undo is one step and
+# the cursor keeps its place.
+[format]
+# Format before writing. Off by default: reformatting a file you only meant to
+# save is a surprise.
+on_save = false
+timeout_ms = 3000
+
+# Built-ins: rustfmt, gofmt, terraform fmt, shfmt, black and prettier.
+use_builtin = true
+
+# [[format.formatter]]
+# command = ["prettier", "--stdin-filepath", "$NAME"]
+# extensions = ["json", "yaml", "md"]
+
+# The gutter.
+[signs]
+enabled = true
+
+# Diagnostic severity: ● error, ▲ warning, • info.
+diagnostics = true
+
+# Lines that differ from git HEAD: ┃ added or changed, ▁ something was deleted
+# just above.
+git = true
