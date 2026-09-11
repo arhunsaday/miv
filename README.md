@@ -162,6 +162,83 @@ whose CI cares.
 Everything here is togglable at runtime: `:set nodiagnostics`, `:set gs`,
 `:set fos`, `:set noswatches`, `:set signs?`.
 
+## Plugins
+
+A plugin is a directory with a `plugin.toml` in
+`~/.config/miv/plugins/<name>/`. No code and no build step: a plugin that only
+needs to pipe text through a program does not need to be a program itself.
+
+```toml
+name = "secrets"
+description = "Base64 for Kubernetes secret values"
+capabilities = ["read_buffer", "write_buffer"]
+
+[[command]]
+name = "b64decode"
+description = "Decode the selection"
+kind = "filter"        # pipe the target through the command, replace it
+target = "selection"   # or "buffer", or "line"
+command = ["base64", "-d"]
+```
+
+`:b64decode` is then a command like any other, in the palette alongside the
+built-ins, undoable in one step. `kind` is `filter` (replace the target),
+`report` (show the output on the message line) or `ex` (run a built-in
+command). Working examples are in [examples/plugins](examples/plugins).
+
+**Capabilities are declared and enforced where they can be.** A `filter`
+command is refused at load time unless the plugin declares `write_buffer`, and
+`:plugins` lists what each one is allowed to do. `network` is the exception and
+is labelled as such: a subprocess does what it likes, so declaring it is a
+disclosure, not a sandbox.
+
+`:events` shows what the editor has been told lately — buffers opened, saved
+and changed, mode changes, diagnostics, session joins. Those are the hooks a
+plugin will get.
+
+### What is not here yet
+
+There is no plugin **host**: nothing runs alongside the editor holding state,
+subscribing to events or drawing its own UI. That is the next piece, and the
+transport is already chosen — a plugin will be an external process speaking
+JSON, the way session clients do, because miv already runs external tools and
+already has that protocol, and because a crashing plugin must not take the
+editor with it. [`plugin::api`](src/plugin/api.rs) documents the operations a
+host will expose and which of them exist.
+
+## AI-assisted editing
+
+Off until you point it at something:
+
+```toml
+[ai]
+enabled = true
+command = ["claude", "-p"]     # or llm, ollama, or a three-line script
+```
+
+```
+:ai add error handling      rewrite the current line
+:'<,'>ai make this a table  rewrite the selection (`:` in visual mode prefills the range)
+:apply  :discard            keep it, or throw it away
+:proposal                   see the diff again
+:chat                       the transcript panel (also Ctrl-W a)
+```
+
+Two decisions worth knowing, both about keeping the editor honest:
+
+**The provider is a command, not an integration.** miv speaks no HTTP and holds
+no API key: it runs what you configure, puts a prompt on stdin and reads the
+reply from stdout. Your credentials stay where you already keep them, you can
+switch models by editing one line, and the whole path is testable with a fake
+script — which is how it *is* tested.
+
+**An answer is a proposal, not an edit.** Nothing reaches the buffer until you
+say so. A proposal carries the exact range it would replace, so it can be shown
+as a diff and applied as one undo step — and if the text changed while the
+provider was thinking, applying it is refused rather than corrupting the file.
+Applied edits are recorded against `ai` in the history, so `u` tells you whose
+change it just took back.
+
 ## Shared sessions
 
 Run `:share` and your editor becomes a host that other people can join — from
@@ -313,6 +390,11 @@ still to come — a formatter's remove-then-insert pair that empties the buffer 
 passing would gain a stray blank line, and `dd` on the last line would grow one
 on undo. `Buffer::end` restores it once, inside the transaction, so undo can
 take it back.
+
+**An edit can be attributed.** `history::Transaction` carries an optional
+author, so a change that arrived from somewhere other than the keyboard — an
+AI proposal today, a plugin or a session guest tomorrow — can be told apart
+afterwards, and undo can say whose change it took back.
 
 **Syntax state is checkpointed every 64 lines, and catch-up is bounded.**
 syntect needs the parser state from the previous line, so highlighting line

@@ -1,0 +1,27 @@
+name = "json"
+version = "0.1.0"
+description = "Format and inspect JSON with jq"
+capabilities = ["read_buffer", "write_buffer", "show_ui"]
+
+[[command]]
+name = "jsonfmt"
+description = "Pretty-print the buffer"
+kind = "filter"
+target = "buffer"
+command = ["jq", "."]
+
+[[command]]
+name = "jsonmin"
+description = "Minify the buffer"
+kind = "filter"
+target = "buffer"
+command = ["jq", "-c", "."]
+
+[[command]]
+name = "jsonkeys"
+# "report" runs the command and shows its output on the message line instead
+# of changing anything. `$ARGS` is whatever followed the command name.
+description = "Show the top-level keys"
+kind = "report"
+target = "buffer"
+command = ["jq", "-c", "keys"]

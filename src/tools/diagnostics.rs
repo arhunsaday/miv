@@ -281,14 +281,6 @@ pub fn builtin_checkers() -> Vec<CheckerConfig> {
             "warning",
         ),
         checker(
-            "actionlint",
-            &["actionlint", "-oneline", "-no-color", "$FILE"],
-            r"^[^:]*:(?<line>\d+):(?<col>\d+):\s*(?<message>.*)$",
-            &[],
-            &[],
-            "error",
-        ),
-        checker(
             "shellcheck",
             &["shellcheck", "-f", "gcc", "-"],
             r"^[^:]*:(?<line>\d+):(?<col>\d+):\s*(?<severity>\w+):\s*(?<message>.*)$",
@@ -419,8 +411,19 @@ mod tests {
     }
 
     #[test]
-    fn actionlint_output_parses() {
-        let found = builtin("actionlint")
+    fn the_documented_actionlint_pattern_parses_its_output() {
+        // actionlint is not a built-in — it only makes sense on workflow
+        // files — but the example configuration documents this pattern, so it
+        // is verified here.
+        let config = CheckerConfig {
+            name: Some("actionlint".to_string()),
+            command: vec!["actionlint".into(), "-oneline".into(), "$FILE".into()],
+            pattern: r"^[^:]*:(?<line>\d+):(?<col>\d+):\s*(?<message>.*)$".to_string(),
+            severity: Some("error".to_string()),
+            ..Default::default()
+        };
+        let found = Checker::compile(&config)
+            .unwrap()
             .parse(".github/workflows/ci.yml:12:9: property \"foo\" is not defined [expression]");
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].line, found[0].col), (11, Some(8)));

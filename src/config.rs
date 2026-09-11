@@ -333,6 +333,34 @@ impl Default for SidebarConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AiConfig {
+    /// Off until you point it at something.
+    pub enabled: bool,
+    /// The provider: a command that reads a prompt on stdin and writes the
+    /// replacement on stdout. `claude -p`, `llm`, `ollama run`, or a script.
+    /// miv holds no key and speaks no HTTP.
+    pub command: Vec<String>,
+    pub timeout_ms: u64,
+    /// Lines either side of the region to send as context.
+    pub context_lines: usize,
+    /// The name recorded in the history for edits that come from here.
+    pub author: String,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: Vec::new(),
+            timeout_ms: 60_000,
+            context_lines: 40,
+            author: "ai".to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -344,6 +372,7 @@ pub struct Config {
     pub signs: SignsConfig,
     pub picker: PickerConfig,
     pub sidebar: SidebarConfig,
+    pub ai: AiConfig,
 }
 
 impl Config {
@@ -372,6 +401,14 @@ impl Config {
         anyhow::ensure!(
             self.session.max_participants >= 1,
             "session.max_participants must be at least 1"
+        );
+        anyhow::ensure!(
+            !self.ai.enabled || !self.ai.command.is_empty(),
+            "ai.enabled needs ai.command to point at a provider"
+        );
+        anyhow::ensure!(
+            !self.ai.author.trim().is_empty(),
+            "ai.author must not be empty"
         );
         anyhow::ensure!(
             (8..=120).contains(&self.sidebar.width),
