@@ -52,7 +52,7 @@ impl Default for EditorConfig {
             shift_width: 4,
             scrolloff: 3,
             line_numbers: LineNumbers::Relative,
-            cursorline: true,
+            cursorline: false,
             ignore_case: true,
             smart_case: true,
             wrap_search: true,
@@ -164,7 +164,7 @@ pub struct FormatConfig {
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {
-            on_save: false,
+            on_save: true,
             timeout_ms: 3000,
             use_builtin: true,
             formatter: Vec::new(),
