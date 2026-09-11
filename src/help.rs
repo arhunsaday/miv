@@ -94,6 +94,13 @@ pub const TOPICS: &[(&str, &str)] = &[
     (":reg :marks", "list registers, marks"),
     (":help", "this list"),
     ("", ""),
+    ("DIAGNOSTICS AND FORMATTING", ""),
+    ("]d [d", "next / previous diagnostic"),
+    ("]h [h", "next / previous change against git HEAD"),
+    (":diag", "list every diagnostic in the buffer"),
+    (":check", "run the checkers now"),
+    (":fmt", "format the buffer with the configured formatter"),
+    ("", ""),
     ("SHARED SESSIONS", ""),
     (
         ":share",

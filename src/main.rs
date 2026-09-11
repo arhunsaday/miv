@@ -4,6 +4,9 @@ mod app;
 mod buffer;
 mod command;
 mod config;
+mod diagnostics;
+mod external;
+mod format;
 mod help;
 mod history;
 mod keymap;
@@ -20,6 +23,7 @@ mod tests;
 mod text;
 mod textobject;
 mod ui;
+mod vcs;
 
 use anyhow::{Context, Result};
 use app::App;
@@ -236,6 +240,7 @@ fn run(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()> {
                             }
                         }
                     });
+                    app.note_change();
                     dirty = true;
                 }
                 Event::Paste(text) => {
@@ -243,6 +248,7 @@ fn run(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()> {
                         app.begin_input();
                         keymap::handle_paste(app, &text);
                     });
+                    app.note_change();
                     dirty = true;
                 }
                 // ratatui recomputes the layout from the backend size each draw,
@@ -253,6 +259,11 @@ fn run(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()> {
         }
 
         if session::commands::poll_events(app) {
+            dirty = true;
+        }
+        // Background tools: start what is due, then apply whatever finished.
+        app.tick_background();
+        if app.poll_background() {
             dirty = true;
         }
     }

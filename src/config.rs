@@ -37,6 +37,11 @@ pub struct EditorConfig {
     pub smart_case: bool,
     /// Wrap around the end of the file when searching.
     pub wrap_search: bool,
+    /// Strip trailing spaces and tabs from every line when writing.
+    pub trim_trailing_whitespace: bool,
+    /// Write a final newline even if the file arrived without one. Off by
+    /// default so files round-trip exactly as they were read.
+    pub ensure_final_newline: bool,
 }
 
 impl Default for EditorConfig {
@@ -47,10 +52,142 @@ impl Default for EditorConfig {
             shift_width: 4,
             scrolloff: 3,
             line_numbers: LineNumbers::Relative,
-            cursorline: true,
+            cursorline: false,
             ignore_case: true,
             smart_case: true,
             wrap_search: true,
+            trim_trailing_whitespace: false,
+            ensure_final_newline: false,
+        }
+    }
+}
+
+/// One external checker: a command, and the pattern that reads its output.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CheckerConfig {
+    /// Shown in the diagnostic list; defaults to the command name.
+    pub name: Option<String>,
+    /// `$FILE` is replaced with a path to the buffer's contents; without it,
+    /// the buffer is piped in on stdin. `$NAME` is the buffer's real name.
+    pub command: Vec<String>,
+    /// Must capture `(?<line>...)`; may capture `col`, `severity`, `message`.
+    pub pattern: String,
+    /// Severity for matches whose pattern has no `severity` group.
+    pub severity: Option<String>,
+    /// Matched against the detected syntax name, case-insensitively.
+    pub filetypes: Vec<String>,
+    /// Matched against the file extension, or the whole file name.
+    pub extensions: Vec<String>,
+}
+
+impl CheckerConfig {
+    pub fn display_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| {
+            self.command
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "checker".to_string())
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FormatterConfig {
+    pub name: Option<String>,
+    pub command: Vec<String>,
+    pub filetypes: Vec<String>,
+    pub extensions: Vec<String>,
+}
+
+impl FormatterConfig {
+    pub fn display_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| {
+            self.command
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "formatter".to_string())
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiagnosticsConfig {
+    pub enabled: bool,
+    /// Run the checkers after every write.
+    pub on_save: bool,
+    /// Run them when a file is opened.
+    pub on_open: bool,
+    /// Run them while you type, once editing pauses.
+    pub on_change: bool,
+    /// How long to wait after the last keystroke before running anything.
+    pub debounce_ms: u64,
+    pub timeout_ms: u64,
+    /// Show the cursor line's diagnostic at the end of the line.
+    pub virtual_text: bool,
+    /// Include the checkers miv ships with. Your own entries are tried first.
+    pub use_builtin: bool,
+    /// `[[diagnostics.checker]]` blocks.
+    pub checker: Vec<CheckerConfig>,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            on_save: true,
+            on_open: true,
+            on_change: false,
+            debounce_ms: 400,
+            timeout_ms: 5000,
+            virtual_text: true,
+            use_builtin: true,
+            checker: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FormatConfig {
+    /// Format before writing. Off by default: reformatting a file you only
+    /// meant to save is a surprise.
+    pub on_save: bool,
+    pub timeout_ms: u64,
+    pub use_builtin: bool,
+    /// `[[format.formatter]]` blocks.
+    pub formatter: Vec<FormatterConfig>,
+}
+
+impl Default for FormatConfig {
+    fn default() -> Self {
+        Self {
+            on_save: true,
+            timeout_ms: 3000,
+            use_builtin: true,
+            formatter: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SignsConfig {
+    pub enabled: bool,
+    /// Diagnostic severity markers.
+    pub diagnostics: bool,
+    /// Lines added, changed or removed against git HEAD.
+    pub git: bool,
+}
+
+impl Default for SignsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            diagnostics: true,
+            git: true,
         }
     }
 }
@@ -65,6 +202,8 @@ pub struct AppearanceConfig {
     pub max_highlight_lines: usize,
     /// Paint the theme's background instead of leaving the terminal's own.
     pub theme_background: bool,
+    /// Paint `#rrggbb` and `rgb(...)` in the colour they name.
+    pub color_swatches: bool,
 }
 
 impl Default for AppearanceConfig {
@@ -74,6 +213,7 @@ impl Default for AppearanceConfig {
             syntax_highlighting: true,
             max_highlight_lines: 50_000,
             theme_background: false,
+            color_swatches: true,
         }
     }
 }
@@ -128,6 +268,9 @@ pub struct Config {
     pub editor: EditorConfig,
     pub appearance: AppearanceConfig,
     pub session: SessionConfig,
+    pub diagnostics: DiagnosticsConfig,
+    pub format: FormatConfig,
+    pub signs: SignsConfig,
 }
 
 impl Config {
@@ -157,6 +300,20 @@ impl Config {
             self.session.max_participants >= 1,
             "session.max_participants must be at least 1"
         );
+        anyhow::ensure!(
+            self.diagnostics.timeout_ms >= 100,
+            "diagnostics.timeout_ms must be at least 100"
+        );
+        anyhow::ensure!(
+            self.format.timeout_ms >= 100,
+            "format.timeout_ms must be at least 100"
+        );
+        for checker in &self.diagnostics.checker {
+            crate::diagnostics::Checker::compile(checker).map_err(anyhow::Error::msg)?;
+        }
+        for formatter in &self.format.formatter {
+            crate::format::Formatter::compile(formatter).map_err(anyhow::Error::msg)?;
+        }
         Ok(())
     }
 }

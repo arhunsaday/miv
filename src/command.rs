@@ -1,6 +1,6 @@
 //! The `:` command line and the `/` search prompt.
 
-use crate::app::{App, Overlay, Prompt, PromptKind};
+use crate::app::{App, Overlay, Prompt, PromptKind, Trigger};
 use crate::mode::Mode;
 use crate::search::Direction;
 use crate::text::{self, Position};
@@ -347,6 +347,13 @@ pub fn execute(app: &mut App, input: &str) {
         "follow" => crate::session::commands::follow(app, &args),
         "unfollow" => crate::session::commands::follow(app, ""),
         "say" => crate::session::commands::say(app, parsed.args.trim()),
+        "fmt" | "format" => format_buffer(app),
+        "check" => {
+            let index = app.current;
+            app.refresh_buffer(index, Trigger::Manual);
+            app.set_message("running checkers…");
+        }
+        "diag" | "diagnostics" => show_diagnostics(app),
         "h" | "help" => show_help(app),
         other => app.set_error(format!("E492: Not an editor command: {other}")),
     }
@@ -486,6 +493,46 @@ fn parse_address(app: &App, chars: &[char]) -> Option<(Option<usize>, usize)> {
     Some((base, i))
 }
 
+fn format_buffer(app: &mut App) {
+    match crate::format::format_buffer(app) {
+        Ok(Some(formatted)) => app.set_message(format!(
+            "{}: {} line(s) changed",
+            formatted.tool, formatted.changed_lines
+        )),
+        Ok(None) => app.set_message("already formatted"),
+        Err(e) => app.set_error(e),
+    }
+}
+
+fn show_diagnostics(app: &mut App) {
+    let buffer = app.buffer();
+    if buffer.diagnostics.is_empty() {
+        app.set_message("no diagnostics");
+        return;
+    }
+    let lines: Vec<String> = buffer
+        .diagnostics
+        .sorted()
+        .iter()
+        .map(|diagnostic| {
+            format!(
+                "  {:>5}:{:<4} {:<8} {:<12} {}",
+                diagnostic.line + 1,
+                diagnostic.col.map(|c| c + 1).unwrap_or(1),
+                diagnostic.severity.label(),
+                diagnostic.source,
+                diagnostic.message
+            )
+        })
+        .collect();
+    let (errors, warnings, infos) = buffer.diagnostics.counts();
+    app.overlay = Some(Overlay {
+        title: format!("Diagnostics — {errors} error(s), {warnings} warning(s), {infos} info — ]d / [d to visit"),
+        lines,
+        scroll: 0,
+    });
+}
+
 fn write_file(app: &mut App, args: &str, _force: bool) -> bool {
     let target: Option<PathBuf> = if args.is_empty() {
         app.buffer().path.clone()
@@ -501,9 +548,28 @@ fn write_file(app: &mut App, args: &str, _force: bool) -> bool {
         let index = app.current;
         app.detect_syntax(index);
     }
+
+    // Tidy-ups run before the write, so what lands on disk is what the
+    // configuration asked for. A formatter that fails is reported but does not
+    // stop the save: refusing to write because a tool is unhappy would be a
+    // good way to lose work.
+    if app.config.format.on_save {
+        if let Err(e) = crate::format::format_buffer(app) {
+            app.set_error(e);
+        }
+    }
+    if app.config.editor.trim_trailing_whitespace {
+        app.trim_trailing_whitespace();
+    }
+    if app.config.editor.ensure_final_newline {
+        app.buffer_mut().final_newline = true;
+    }
+
     match app.buffer_mut().write(&path) {
         Ok((bytes, lines)) => {
             app.set_message(format!("\"{}\" {lines}L, {bytes}B written", path.display()));
+            let index = app.current;
+            app.refresh_buffer(index, Trigger::Save);
             true
         }
         Err(e) => {
@@ -869,6 +935,13 @@ fn set_single_option(app: &mut App, token: &str) -> Result<(), String> {
             "ignorecase" => app.config.editor.ignore_case.to_string(),
             "smartcase" => app.config.editor.smart_case.to_string(),
             "wrapscan" => app.config.editor.wrap_search.to_string(),
+            "diagnostics" => app.config.diagnostics.enabled.to_string(),
+            "virtualtext" => app.config.diagnostics.virtual_text.to_string(),
+            "signs" => app.config.signs.enabled.to_string(),
+            "gitsigns" => app.config.signs.git.to_string(),
+            "formatonsave" => app.config.format.on_save.to_string(),
+            "swatches" => app.config.appearance.color_swatches.to_string(),
+            "trimwhitespace" => app.config.editor.trim_trailing_whitespace.to_string(),
             "theme" => app.config.appearance.theme.clone(),
             other => return Err(format!("E518: Unknown option: {other}")),
         };
@@ -953,6 +1026,23 @@ fn set_single_option(app: &mut App, token: &str) -> Result<(), String> {
                 app.detect_syntax(index);
             }
         }
+        "diagnostics" => {
+            app.config.diagnostics.enabled = enable;
+            if enable {
+                let index = app.current;
+                app.refresh_buffer(index, Trigger::Manual);
+            } else {
+                for buffer in &mut app.buffers {
+                    buffer.diagnostics.clear();
+                }
+            }
+        }
+        "virtualtext" => app.config.diagnostics.virtual_text = enable,
+        "signs" => app.config.signs.enabled = enable,
+        "gitsigns" => app.config.signs.git = enable,
+        "formatonsave" => app.config.format.on_save = enable,
+        "swatches" => app.config.appearance.color_swatches = enable,
+        "trimwhitespace" => app.config.editor.trim_trailing_whitespace = enable,
         other => return Err(format!("E518: Unknown option: {other}")),
     }
     Ok(())
@@ -970,6 +1060,10 @@ fn canonical(name: &str) -> &str {
         "ic" => "ignorecase",
         "scs" => "smartcase",
         "ws" => "wrapscan",
+        "diag" => "diagnostics",
+        "vt" => "virtualtext",
+        "fos" => "formatonsave",
+        "gs" => "gitsigns",
         other => other,
     }
 }

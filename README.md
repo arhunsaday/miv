@@ -54,6 +54,56 @@ There is one window, so `:q` leaves the editor rather than closing a buffer
 **Files** — multiple buffers, atomic saves, UTF-8, and round-tripping of CRLF
 line endings and files with no trailing newline.
 
+## Diagnostics, formatting and the gutter
+
+miv does not know what a YAML error is. It knows how to run a command and read
+`file:line:col: message` out of its output, which is enough to wire up most of
+a working toolchain:
+
+```
+]d  [d        next / previous diagnostic
+]h  [h        next / previous change against git HEAD
+:diag         list every diagnostic in the buffer
+:check        run the checkers now
+:fmt          format the buffer
+```
+
+Checkers run in the background after a write (and optionally as you type);
+results for text that has since changed are discarded rather than shown against
+the wrong lines. The gutter carries diagnostic severity — `●` error, `▲`
+warning, `•` info — falling back to git status on lines that are merely changed:
+`┃` for added or modified, `▁` where something was deleted. The cursor line's
+diagnostic is written after the text, so it never shifts the code it describes.
+
+`yamllint`, `shellcheck`, `hadolint`, `actionlint` and `jq` work out of the box
+if you have them; `rustfmt`, `gofmt`, `terraform fmt`, `shfmt`, `black` and
+`prettier` are the formatters. A tool you have not installed is mentioned once
+and then ignored. Adding one is three lines:
+
+```toml
+[[diagnostics.checker]]
+command = ["kubeconform", "-output", "tap", "$FILE"]
+pattern = "^not ok \\d+ - (?<message>.*)$"
+extensions = ["yml", "yaml"]
+```
+
+`$FILE` becomes a path to the buffer's current contents — so unsaved text is
+checked, not what is on disk — and without it the buffer arrives on stdin. A
+pattern that cannot capture a line number is rejected when the config loads,
+rather than silently finding nothing.
+
+Formatters run synchronously, since you are waiting for them, and their output
+is applied as a minimal set of line splices: one undo step, and the cursor
+stays where it was rather than being flung to the top of the file. In a shared
+session, everyone else's cursor moves correctly too.
+
+Alongside: `#rrggbb` and `rgb(...)` are painted in the colour they name, and
+`trim_trailing_whitespace` / `ensure_final_newline` are available for repos
+whose CI cares.
+
+Everything here is togglable at runtime: `:set nodiagnostics`, `:set gs`,
+`:set fos`, `:set noswatches`, `:set signs?`.
+
 ## Shared sessions
 
 Run `:share` and your editor becomes a host that other people can join — from
@@ -193,6 +243,13 @@ what lets every existing command work per-participant without knowing sessions
 exist, and it is why adding a feature to the editor adds it to every guest for
 free.
 
+**The trailing-newline invariant only holds between commands.** The rope always
+ends with a newline, but restoring that mid-command would fight the changes
+still to come — a formatter's remove-then-insert pair that empties the buffer in
+passing would gain a stray blank line, and `dd` on the last line would grow one
+on undo. `Buffer::end` restores it once, inside the transaction, so undo can
+take it back.
+
 **Syntax state is checkpointed every 64 lines, and catch-up is bounded.**
 syntect needs the parser state from the previous line, so highlighting line
 28,000 from a cold cache means parsing 28,000 lines — measured at just over a
@@ -208,13 +265,23 @@ through the gap.
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+
+python -m pip install pyte websocket-client
+cargo build && python tests/e2e/run_all.py
 ```
 
-The editing tests drive the real key handler with Vim notation
+There are two layers. The unit and integration tests drive the real key handler
+with Vim notation
 (`press(&mut app, "cwgamma<Esc>")`), so they exercise the whole path a
 keystroke takes rather than calling internals. The session tests drive a real
 `Session` without opening a socket, covering per-participant state, cursor
 transformation under concurrent edits, and the read-only guarantee.
+
+The end-to-end suites in `tests/e2e` run the real binary in a pseudo-terminal
+and render its output with a terminal emulator, which is the only way to cover
+the event loop, terminal setup and teardown, real subprocesses, real sockets and
+what is actually on screen — including the gutter signs and the colour of a
+swatch. They run in CI.
 
 `Cargo.lock` is committed and the crate declares `rust-version = "1.81"`.
 Build with `--locked` for a reproducible build.
