@@ -1162,13 +1162,30 @@ fn inject_diagnostics(app: &mut App, lines: &[(usize, crate::tools::diagnostics:
 
 /// Wait for background tools to deliver, since they run on their own threads.
 fn settle(app: &mut App) {
+    settle_until(app, |app| {
+        app.poll_background();
+        false
+    });
+}
+
+/// Pump background results until `ready` says so, or time runs out.
+///
+/// Waiting for "anything finished" is not enough: an unrelated checker
+/// finishing would end the wait before the thing under test arrived.
+fn settle_until(app: &mut App, mut ready: impl FnMut(&mut App) -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
-        if app.poll_background() {
+        app.poll_background();
+        if ready(app) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+/// Wait for the AI provider to answer.
+fn settle_ai(app: &mut App) {
+    settle_until(app, |app| !app.asking);
 }
 
 #[test]
@@ -1663,6 +1680,542 @@ fn a_missing_tool_is_mentioned_once_and_then_left_alone() {
     assert!(app.message.is_none(), "should not complain twice");
 }
 
+// -- plugins ----------------------------------------------------------------
+
+fn plugin_dir(label: &str, name: &str, manifest: &str) -> std::path::PathBuf {
+    let root = scratch_dir(label);
+    let directory = root.join(name);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("plugin.toml"), manifest).unwrap();
+    root
+}
+
+#[test]
+fn a_manifest_parses_and_contributes_commands() {
+    use crate::plugin::{Capability, Kind, Plugins, Target};
+    let root = plugin_dir(
+        "plug-ok",
+        "shout",
+        r#"
+name = "shout"
+version = "0.1.0"
+description = "Make it loud"
+capabilities = ["read_buffer", "write_buffer"]
+
+[[command]]
+name = "shout"
+description = "Uppercase the selection"
+kind = "filter"
+target = "selection"
+command = ["tr", "a-z", "A-Z"]
+"#,
+    );
+    let plugins = Plugins::load(&root);
+    assert!(plugins.problems.is_empty(), "{:?}", plugins.problems);
+    assert_eq!(plugins.loaded.len(), 1);
+    let plugin = &plugins.loaded[0];
+    assert_eq!(plugin.manifest.name, "shout");
+    assert!(plugin.grants(Capability::WriteBuffer));
+    assert!(!plugin.grants(Capability::Network));
+
+    let command = plugins.command("shout").expect("a contributed command");
+    assert_eq!(command.kind, Kind::Filter);
+    assert_eq!(command.target, Target::Selection);
+    assert_eq!(command.plugin, "shout");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_command_that_writes_without_saying_so_is_refused() {
+    use crate::plugin::Plugins;
+    let root = plugin_dir(
+        "plug-caps",
+        "sneaky",
+        r#"
+name = "sneaky"
+capabilities = ["read_buffer"]
+
+[[command]]
+name = "rewrite"
+kind = "filter"
+command = ["cat"]
+"#,
+    );
+    let plugins = Plugins::load(&root);
+    assert!(plugins.command("rewrite").is_none(), "must not be offered");
+    assert!(
+        plugins.problems.iter().any(|p| p.contains("write_buffer")),
+        "{:?}",
+        plugins.problems
+    );
+    // The plugin still loads; only the command it was not allowed is dropped.
+    assert_eq!(plugins.loaded.len(), 1);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_broken_manifest_is_reported_and_the_others_still_load() {
+    use crate::plugin::Plugins;
+    let root = scratch_dir("plug-broken");
+    for (name, body) in [
+        ("good", "name = \"good\"\n"),
+        ("nameless", "version = \"1\"\n"),
+        ("garbage", "name = = =\n"),
+    ] {
+        let directory = root.join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("plugin.toml"), body).unwrap();
+    }
+    let plugins = Plugins::load(&root);
+    assert_eq!(plugins.loaded.len(), 1, "the good one should still load");
+    assert_eq!(plugins.loaded[0].manifest.name, "good");
+    assert_eq!(plugins.problems.len(), 2, "{:?}", plugins.problems);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn two_plugins_cannot_claim_the_same_command() {
+    use crate::plugin::Plugins;
+    let root = scratch_dir("plug-clash");
+    for name in ["aaa", "bbb"] {
+        let directory = root.join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("plugin.toml"),
+            format!(
+                "name = \"{name}\"\ncapabilities = [\"write_buffer\"]\n\n\
+                 [[command]]\nname = \"same\"\nkind = \"filter\"\ncommand = [\"cat\"]\n"
+            ),
+        )
+        .unwrap();
+    }
+    let plugins = Plugins::load(&root);
+    assert!(plugins.command("same").is_some());
+    assert!(
+        plugins.problems.iter().any(|p| p.contains("already")),
+        "{:?}",
+        plugins.problems
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_plugin_command_transforms_the_buffer_and_undoes_in_one_step() {
+    use crate::plugin::Plugins;
+    let root = plugin_dir(
+        "plug-filter",
+        "shout",
+        r#"
+name = "shout"
+capabilities = ["read_buffer", "write_buffer"]
+
+[[command]]
+name = "shout"
+kind = "filter"
+target = "line"
+command = ["tr", "a-z", "A-Z"]
+"#,
+    );
+    let mut app = app_with(
+        "quiet line
+second line",
+    );
+    app.plugins = Plugins::load(&root);
+
+    press(&mut app, ":shout<CR>");
+    assert_eq!(
+        content(&app),
+        "QUIET LINE
+second line
+"
+    );
+    press(&mut app, "u");
+    assert_eq!(
+        content(&app),
+        "quiet line
+second line
+"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_plugin_command_can_report_instead_of_editing() {
+    use crate::plugin::Plugins;
+    let root = plugin_dir(
+        "plug-report",
+        "counter",
+        r#"
+name = "counter"
+capabilities = ["read_buffer", "show_ui"]
+
+[[command]]
+name = "count"
+kind = "report"
+target = "buffer"
+command = ["wc", "-l"]
+"#,
+    );
+    let mut app = app_with(
+        "a
+b
+c",
+    );
+    app.plugins = Plugins::load(&root);
+    press(&mut app, ":count<CR>");
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.contains("count:"), "{message}");
+    assert_eq!(
+        content(&app),
+        "a
+b
+c
+",
+        "a report must not edit"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn an_unknown_command_still_reports_itself_as_unknown() {
+    let mut app = app_with(
+        "text
+",
+    );
+    press(&mut app, ":nosuchthing<CR>");
+    assert!(app.message.as_ref().unwrap().text.contains("E492"));
+}
+
+#[test]
+fn events_are_dispatched_from_where_they_happen() {
+    use crate::plugin::Event;
+    let mut app = app_with(
+        "text
+",
+    );
+
+    // A mode change is noticed once, wherever it came from.
+    press(&mut app, "i");
+    assert!(app
+        .plugins
+        .recent()
+        .iter()
+        .any(|event| matches!(event, Event::ModeChanged { mode } if *mode == "INSERT")));
+
+    press(&mut app, "x<Esc>");
+    assert!(app
+        .plugins
+        .recent()
+        .iter()
+        .any(|event| matches!(event, Event::BufferChanged { .. })));
+
+    // And they show up in the overlay.
+    press(&mut app, ":events<CR>");
+    let overlay = app.overlay.as_ref().expect("an overlay");
+    assert!(overlay.lines.iter().any(|line| line.contains("mode:")));
+}
+
+#[test]
+fn the_plugin_list_says_what_is_loaded_and_what_it_may_do() {
+    use crate::plugin::Plugins;
+    let root = plugin_dir(
+        "plug-list",
+        "risky",
+        r#"
+name = "risky"
+version = "2.0"
+description = "Talks to the internet"
+capabilities = ["read_buffer", "network"]
+"#,
+    );
+    let mut app = app_with(
+        "text
+",
+    );
+    app.plugins = Plugins::load(&root);
+    press(&mut app, ":plugins<CR>");
+    let overlay = app.overlay.as_ref().expect("an overlay");
+    let text = overlay.lines.join(
+        "
+",
+    );
+    assert!(text.contains("risky"), "{text}");
+    assert!(
+        text.contains("network"),
+        "capabilities must be visible: {text}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn with_no_plugins_the_list_says_where_to_put_one() {
+    let mut app = app_with(
+        "text
+",
+    );
+    press(&mut app, ":plugins<CR>");
+    let overlay = app.overlay.as_ref().unwrap();
+    assert!(overlay
+        .lines
+        .join(
+            "
+"
+        )
+        .contains("plugin.toml"));
+}
+
+// -- ai ---------------------------------------------------------------------
+
+/// A provider that answers with `reply`, and proves it saw the prompt.
+fn fake_provider(directory: &std::path::Path, reply: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = directory.join("provider");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh
+prompt=$(cat)
+case \"$prompt\" in
+  *INSTRUCTION*) printf '%s' '{reply}' ;;
+  *) echo 'NO INSTRUCTION IN PROMPT' ;;
+esac
+"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+fn app_with_provider(text: &str, reply: &str) -> (App, std::path::PathBuf) {
+    let directory = scratch_dir("ai");
+    let script = fake_provider(&directory, reply);
+    let mut app = app_with(text);
+    app.config.ai.enabled = true;
+    app.config.ai.command = vec![script.display().to_string()];
+    (app, directory)
+}
+
+#[test]
+fn asking_without_a_provider_says_so() {
+    let mut app = app_with(
+        "text
+",
+    );
+    press(&mut app, ":ai make it better<CR>");
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.contains("ai is off"), "{message}");
+    assert!(app.proposal.is_none());
+}
+
+#[test]
+fn an_answer_becomes_a_proposal_rather_than_an_edit() {
+    let (mut app, directory) = app_with_provider(
+        "quiet line
+",
+        "LOUD LINE
+",
+    );
+    press(&mut app, ":ai shout it<CR>");
+    assert!(app.asking, "the request should be in flight");
+    settle_ai(&mut app);
+
+    // Nothing has touched the buffer yet.
+    assert_eq!(content(&app), "quiet line\n");
+    let proposal = app.proposal.as_ref().expect("a proposal");
+    assert_eq!(proposal.instruction, "shout it");
+    // Reshaped to the region, which is a line's text without its newline.
+    assert_eq!(proposal.replacement, "LOUD LINE");
+    assert!(proposal
+        .diff()
+        .iter()
+        .any(|line| line.starts_with("+ LOUD")));
+
+    // The prompt carried the instruction: the fake provider checked.
+    assert!(!proposal.replacement.contains("NO INSTRUCTION"));
+
+    // And the diff is shown for review.
+    let overlay = app.overlay.as_ref().expect("the diff");
+    assert_eq!(overlay.title, "AI proposal");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn applying_a_proposal_is_attributed_and_undoes_in_one_step() {
+    let (mut app, directory) = app_with_provider(
+        "quiet line
+",
+        "LOUD LINE
+",
+    );
+    press(&mut app, ":ai shout it<CR>");
+    settle_ai(&mut app);
+
+    press(&mut app, ":apply<CR>");
+    assert_eq!(
+        content(&app),
+        "LOUD LINE
+"
+    );
+    assert!(app.proposal.is_none());
+    assert_eq!(app.buffer().history.last_author(), Some("ai"));
+
+    // Undo says whose change it was taking back.
+    press(&mut app, "u");
+    assert_eq!(content(&app), "quiet line\n");
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.contains("ai's change"), "{message}");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn a_proposal_can_be_thrown_away() {
+    let (mut app, directory) = app_with_provider(
+        "quiet line
+",
+        "LOUD LINE
+",
+    );
+    press(&mut app, ":ai shout it<CR>");
+    settle_ai(&mut app);
+    press(&mut app, ":discard<CR>");
+    assert!(app.proposal.is_none());
+    assert_eq!(content(&app), "quiet line\n");
+    press(&mut app, ":apply<CR>");
+    assert!(app.message.as_ref().unwrap().text.contains("no proposal"));
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn a_proposal_is_refused_if_the_text_moved_while_it_was_thinking() {
+    let (mut app, directory) = app_with_provider(
+        "quiet line
+",
+        "LOUD LINE
+",
+    );
+    press(&mut app, ":ai shout it<CR>");
+    settle_ai(&mut app);
+
+    // Dismiss the diff, then edit the region before accepting.
+    press(&mut app, "<Esc>");
+    press(&mut app, "x");
+    press(&mut app, ":apply<CR>");
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.contains("changed since"), "{message}");
+    assert!(!content(&app).contains("LOUD"), "it must not be applied");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn a_provider_that_fails_is_reported_and_leaves_the_buffer_alone() {
+    let directory = scratch_dir("ai-fail");
+    let mut app = app_with(
+        "untouched
+",
+    );
+    app.config.ai.enabled = true;
+    app.config.ai.command = vec!["miv-no-such-provider".to_string()];
+    press(&mut app, ":ai anything<CR>");
+    settle_ai(&mut app);
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.contains("not installed"), "{message}");
+    assert_eq!(
+        content(&app),
+        "untouched
+"
+    );
+    assert!(app.proposal.is_none());
+    assert!(!app.asking, "the request should not be left hanging");
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn the_transcript_records_both_sides() {
+    let (mut app, directory) = app_with_provider(
+        "quiet
+", "LOUD
+",
+    );
+    press(&mut app, ":ai shout<CR>");
+    settle_ai(&mut app);
+    press(&mut app, ":apply<CR>");
+
+    let turns: Vec<String> = app
+        .conversation
+        .turns()
+        .iter()
+        .map(|turn| format!("{}: {}", turn.speaker(), turn.text()))
+        .collect();
+    assert!(
+        turns.iter().any(|turn| turn.contains("you: shout")),
+        "{turns:?}"
+    );
+    assert!(
+        turns.iter().any(|turn| turn.starts_with("ai:")),
+        "{turns:?}"
+    );
+    assert!(
+        turns.iter().any(|turn| turn.contains("applied")),
+        "{turns:?}"
+    );
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn the_chat_panel_toggles_without_taking_the_keyboard() {
+    use crate::view::sidebar::View;
+    let mut app = app_with(
+        "text
+",
+    );
+    press(&mut app, ":chat<CR>");
+    assert!(app.workspace.sidebar.visible);
+    assert_eq!(app.workspace.sidebar.view, View::Chat);
+    // The transcript is read-only, so typing still goes to the buffer.
+    assert!(!app.sidebar_focused());
+    press(&mut app, "x");
+    assert_eq!(
+        content(&app),
+        "ext
+"
+    );
+
+    press(&mut app, ":chat<CR>");
+    assert!(!app.workspace.sidebar.visible, "toggles off");
+}
+
+#[test]
+fn asking_on_a_visual_selection_uses_the_selection() {
+    let (mut app, directory) = app_with_provider(
+        "one
+two
+three
+",
+        "REPLACED
+",
+    );
+    press(&mut app, "Vj");
+    press(&mut app, ":ai shout<CR>");
+    settle_ai(&mut app);
+    let proposal = app.proposal.as_ref().expect("a proposal");
+    assert_eq!(
+        proposal.original,
+        "one
+two
+",
+        "the selected lines"
+    );
+    press(&mut app, ":apply<CR>");
+    assert_eq!(
+        content(&app),
+        "REPLACED
+three
+"
+    );
+    std::fs::remove_dir_all(&directory).ok();
+}
+
 // -- configuration ----------------------------------------------------------
 
 fn write_config(body: &str) -> std::path::PathBuf {
@@ -1895,6 +2448,25 @@ name = "empty"
     let path = write_config("[signs]\ngti = true\n");
     assert!(crate::config::Config::load(&path).is_err());
     std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn the_example_plugins_load() {
+    // They are the documentation for the manifest format, so they must keep
+    // parsing — including the capability checks, which run at load.
+    use crate::plugin::Plugins;
+    let plugins = Plugins::load(std::path::Path::new("examples/plugins"));
+    assert!(
+        plugins.problems.is_empty(),
+        "the shipped examples should load cleanly: {:?}",
+        plugins.problems
+    );
+    assert_eq!(plugins.loaded.len(), 2, "secrets and json");
+    assert!(plugins.command("b64decode").is_some());
+    assert!(plugins.command("jsonfmt").is_some());
+    // And the reporting command is there without needing write access.
+    let keys = plugins.command("jsonkeys").expect("jsonkeys");
+    assert_eq!(keys.kind, crate::plugin::Kind::Report);
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! miv — a modal terminal text editor.
 
+mod ai;
 mod app;
 mod command;
 mod config;
@@ -9,6 +10,7 @@ mod help;
 mod keymap;
 mod keys;
 mod mode;
+mod plugin;
 mod session;
 mod syntax;
 #[cfg(test)]
@@ -212,6 +214,7 @@ fn run(terminal: &mut Terminal<Backend>, app: &mut App) -> Result<()> {
             let _ = execute!(stdout(), ui::cursor_style(cursor_shape));
         }
         if app.should_quit {
+            app.announce(plugin::Event::Quitting);
             return Ok(());
         }
 

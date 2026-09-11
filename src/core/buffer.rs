@@ -248,6 +248,12 @@ impl Buffer {
         self.history.start(cursor);
     }
 
+    /// Like [`Buffer::begin`], but credited to someone other than the typist.
+    pub fn begin_authored(&mut self, author: String) {
+        let cursor = self.cursor;
+        self.history.start_authored(cursor, Some(author));
+    }
+
     pub fn end(&mut self) {
         // The trailing-newline invariant only has to hold between commands.
         // Restoring it mid-command would fight the changes still to come: a

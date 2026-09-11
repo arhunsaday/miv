@@ -134,6 +134,16 @@ use_builtin = true
 # pattern = "^not ok \\d+ - (?<message>.*)$"
 # severity = "error"
 # extensions = ["yml", "yaml"]
+#
+# actionlint is not a built-in because it only makes sense on workflow files,
+# and a checker with no filters would run on everything:
+#
+# [[diagnostics.checker]]
+# name = "actionlint"
+# command = ["actionlint", "-oneline", "-no-color", "$FILE"]
+# pattern = "^[^:]*:(?<line>\\d+):(?<col>\\d+):\\s*(?<message>.*)$"
+# severity = "error"
+# extensions = ["yml", "yaml"]
 
 # Formatting through external tools.
 #
@@ -188,3 +198,29 @@ max_files = 50000
 grep_command = ["rg", "--vimgrep", "--color=never", "--smart-case", "--", "$PATTERN"]
 
 timeout_ms = 10000
+
+# AI-assisted editing. Off until you point it at a provider.
+#
+# miv holds no API key and speaks no HTTP: it runs a command you configure,
+# puts a prompt on its stdin and reads the replacement from its stdout. Use
+# whatever you already have — `claude -p`, `llm`, `ollama run`, or a script.
+#
+# An answer never reaches the buffer on its own. It arrives as a proposal you
+# review as a diff, then :apply or :discard. Applied edits are recorded under
+# `author`, so undo can tell you whose change it took back.
+[ai]
+enabled = false
+
+# command = ["claude", "-p"]
+# command = ["llm", "-m", "gpt-4o-mini"]
+# command = ["ollama", "run", "qwen2.5-coder"]
+command = []
+
+timeout_ms = 60000
+
+# Lines either side of the region sent as context, so the model can see what
+# it is editing inside without being asked to rewrite it.
+context_lines = 40
+
+# The name recorded in the history for edits that come from here.
+author = "ai"

@@ -109,22 +109,32 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Any key dismisses an overlay and does nothing else.
+    // An overlay is dismissed by any key, but the global entry points are
+    // passed through rather than swallowed: showing a diff and then eating
+    // the `:` that acts on it would be a poor trade.
     if app.overlay.is_some() {
-        if key.code == KeyCode::Down || key.code == KeyCode::Char('j') {
-            if let Some(overlay) = app.overlay.as_mut() {
-                overlay.scroll = overlay.scroll.saturating_add(1);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(overlay) = app.overlay.as_mut() {
+                    overlay.scroll = overlay.scroll.saturating_add(1);
+                }
+                return;
             }
-            return;
-        }
-        if key.code == KeyCode::Up || key.code == KeyCode::Char('k') {
-            if let Some(overlay) = app.overlay.as_mut() {
-                overlay.scroll = overlay.scroll.saturating_sub(1);
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(overlay) = app.overlay.as_mut() {
+                    overlay.scroll = overlay.scroll.saturating_sub(1);
+                }
+                return;
             }
-            return;
+            _ => {}
         }
+        let passthrough = matches!(key.code, KeyCode::Char(':')) && !ctrl
+            || ctrl && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('k'));
         app.overlay = None;
-        return;
+        if !passthrough {
+            return;
+        }
     }
 
     let stops_recording = app.recording.is_some()
@@ -144,6 +154,8 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         app.dot.recording.push(key);
     }
 
+    let mode_before = app.mode;
+    let revision_before = app.buffer().history.revision();
     match app.mode {
         Mode::Insert => insert_mode(app, key),
         Mode::Replace => replace_mode(app, key),
@@ -160,6 +172,17 @@ pub fn handle(app: &mut App, key: KeyEvent) {
             app.dot.recording.clear();
         }
         app.dot.changed = false;
+    }
+
+    // One place to notice a mode or text change, rather than a dispatch call
+    // in every command that causes one.
+    if app.mode != mode_before {
+        let mode = app.mode.label();
+        app.announce(crate::plugin::Event::ModeChanged { mode });
+    }
+    if app.buffer().history.revision() != revision_before {
+        let buffer = app.buffer().id;
+        app.announce(crate::plugin::Event::BufferChanged { buffer });
     }
 
     if !app.mode.is_prompt() {
@@ -665,7 +688,14 @@ fn handle_awaiting(app: &mut App, awaiting: Awaiting, key: KeyEvent) {
                 KeyCode::Char('o') => app.only_window(),
                 // `e` for the explorer: show or hide it; `E` just moves the
                 // keyboard there and back.
-                KeyCode::Char('e') => app.toggle_sidebar(),
+                KeyCode::Char('e') => app
+                    .workspace
+                    .sidebar
+                    .toggle_view(crate::view::sidebar::View::Explorer),
+                KeyCode::Char('a') => app
+                    .workspace
+                    .sidebar
+                    .toggle_view(crate::view::sidebar::View::Chat),
                 KeyCode::Char('E') => {
                     let focused = app.sidebar_focused();
                     app.focus_sidebar(!focused);
@@ -1060,6 +1090,8 @@ fn move_by_lines(app: &mut App, delta: i32) {
 }
 
 fn undo(app: &mut App, count: usize) {
+    // Whose change is about to go, so undoing someone else's edit says so.
+    let author = app.buffer().history.last_author().map(str::to_string);
     let mut applied = 0;
     for _ in 0..count.max(1) {
         if app.buffer_mut().undo() {
@@ -1071,7 +1103,10 @@ fn undo(app: &mut App, count: usize) {
     if applied == 0 {
         app.set_error("E32: Already at oldest change");
     } else {
-        app.set_message(format!("{applied} change(s) undone"));
+        match author.filter(|_| applied == 1) {
+            Some(author) => app.set_message(format!("undid {author}'s change")),
+            None => app.set_message(format!("{applied} change(s) undone")),
+        }
     }
     app.pending.reset();
 }
