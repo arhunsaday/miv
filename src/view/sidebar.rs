@@ -8,12 +8,15 @@ use super::explorer::Explorer;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Explorer,
+    /// The AI transcript.
+    Chat,
 }
 
 impl View {
     pub fn title(self) -> &'static str {
         match self {
             View::Explorer => "Explorer",
+            View::Chat => "Chat",
         }
     }
 }
@@ -56,6 +59,22 @@ impl Sidebar {
         self.visible = !self.visible;
         self.focused = self.visible;
         if self.visible {
+            self.explorer.refresh();
+        }
+    }
+
+    /// Show a particular view, or hide the sidebar if it is already showing.
+    pub fn toggle_view(&mut self, view: View) {
+        if self.visible && self.view == view {
+            self.visible = false;
+            self.focused = false;
+            return;
+        }
+        self.view = view;
+        self.visible = true;
+        // The chat is read-only for now, so the keyboard stays with the text.
+        self.focused = view == View::Explorer;
+        if view == View::Explorer {
             self.explorer.refresh();
         }
     }

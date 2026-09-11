@@ -227,6 +227,11 @@ pub struct GrepMatch {
 }
 
 pub enum Finished {
+    /// A reply from the AI provider.
+    Answered {
+        request: crate::ai::Request,
+        result: Result<String, String>,
+    },
     /// Files under a root, for the file picker.
     Listed { files: Vec<String>, truncated: bool },
     /// Search hits across the project.
@@ -383,6 +388,42 @@ impl Runner {
                 Err(e) => Err(format!("{e}")),
             };
             let _ = sender.send(Finished::Grepped { pattern, result });
+        });
+    }
+
+    /// Put a prompt to the AI provider.
+    pub fn ask(
+        &self,
+        command: Vec<String>,
+        prompt: String,
+        request: crate::ai::Request,
+        timeout: Duration,
+    ) {
+        let sender = self.sender.clone();
+        thread::spawn(move || {
+            let outcome = run(&command, "prompt.txt", &prompt, None, timeout);
+            let result = match outcome {
+                Ok(output) if output.status == Some(0) => {
+                    let reply = crate::ai::clean(&output.stdout);
+                    if reply.trim().is_empty() {
+                        Err("the provider returned nothing".to_string())
+                    } else {
+                        Ok(reply)
+                    }
+                }
+                Ok(output) => Err(output
+                    .stderr
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("the provider exited non-zero")
+                    .to_string()),
+                Err(e) if e.kind() == IoErrorKind::NotFound => Err(format!(
+                    "{} is not installed",
+                    command.first().map(String::as_str).unwrap_or("provider")
+                )),
+                Err(e) => Err(format!("{e}")),
+            };
+            let _ = sender.send(Finished::Answered { request, result });
         });
     }
 

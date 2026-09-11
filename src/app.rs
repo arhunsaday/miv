@@ -149,6 +149,14 @@ pub struct App {
     pub picker: Option<Picker>,
     /// Suggestions for the word being typed.
     pub completion: Option<crate::edit::complete::Completion>,
+    /// Loaded plugins and the commands they contribute.
+    pub plugins: crate::plugin::Plugins,
+    /// An AI answer waiting to be accepted or thrown away.
+    pub proposal: Option<crate::ai::proposal::Proposal>,
+    /// The transcript behind the sidebar's chat view.
+    pub conversation: crate::ai::Conversation,
+    /// A request is in flight.
+    pub asking: bool,
     /// Background external tools.
     pub runner: crate::tools::external::Runner,
     pub checkers: Vec<crate::tools::diagnostics::Checker>,
@@ -212,6 +220,10 @@ impl App {
             workspace,
             picker: None,
             completion: None,
+            plugins: crate::plugin::Plugins::default(),
+            proposal: None,
+            conversation: crate::ai::Conversation::default(),
+            asking: false,
             runner: crate::tools::external::Runner::default(),
             checkers: Vec::new(),
             formatters: Vec::new(),
@@ -243,6 +255,13 @@ impl App {
             app.set_error(format!(
                 "unknown theme {name:?}; using base16-ocean.dark (see :help)"
             ));
+        }
+        app.plugins = match crate::plugin::default_directory() {
+            Some(directory) => crate::plugin::Plugins::load(&directory),
+            None => crate::plugin::Plugins::default(),
+        };
+        if let Some(problem) = app.plugins.problems.first().cloned() {
+            app.set_error(format!("plugin: {problem}"));
         }
         app.rebuild_tools();
         for index in 0..app.buffers.len() {
@@ -319,6 +338,11 @@ impl App {
     /// Note that the text changed, restarting the debounce.
     pub fn note_change(&mut self) {
         self.last_change = Some(Instant::now());
+    }
+
+    /// Tell the plugins something happened.
+    pub fn announce(&mut self, event: crate::plugin::Event) {
+        self.plugins.dispatch(event);
     }
 
     /// Start the checkers and the git diff for one buffer.
@@ -412,6 +436,18 @@ impl App {
         let mut changed = false;
         for item in finished {
             match item {
+                crate::tools::external::Finished::Answered { request, result } => {
+                    self.asking = false;
+                    changed = true;
+                    match result {
+                        Ok(replacement) => self.receive_proposal(request, replacement),
+                        Err(e) => {
+                            self.conversation
+                                .say(crate::ai::Turn::Note(format!("failed: {e}")));
+                            self.set_error(format!("ai: {e}"));
+                        }
+                    }
+                }
                 crate::tools::external::Finished::Listed { files, truncated } => {
                     let Some(picker) = self.picker.as_mut() else {
                         continue;
@@ -492,6 +528,13 @@ impl App {
                     match result {
                         Ok(items) => {
                             self.buffers[index].diagnostics.replace(&tool, items);
+                            let (errors, warnings, _) = self.buffers[index].diagnostics.counts();
+                            let id = self.buffers[index].id;
+                            self.announce(crate::plugin::Event::DiagnosticsUpdated {
+                                buffer: id,
+                                errors,
+                                warnings,
+                            });
                             changed = true;
                         }
                         Err(failure) => {
@@ -781,6 +824,186 @@ impl App {
         true
     }
 
+    // -- ai -----------------------------------------------------------------
+
+    /// Ask the provider to rewrite a range of lines, or the current line.
+    ///
+    /// The range comes from the ex command, so `:'<,'>ai …` works — pressing
+    /// `:` in visual mode prefills that range, which is how a selection
+    /// reaches here after visual mode has already been left behind.
+    pub fn ask_ai(&mut self, range: Option<(usize, usize)>, instruction: &str) {
+        if !self.config.ai.enabled {
+            self.set_error("ai is off; set ai.enabled and ai.command (see :help)");
+            return;
+        }
+        if instruction.trim().is_empty() {
+            self.set_error("usage: :ai <what to do>");
+            return;
+        }
+        if self.asking {
+            self.set_error("already waiting for an answer");
+            return;
+        }
+
+        let (start, end) = match range {
+            Some((first, last)) => {
+                let buffer = self.buffer();
+                let last = last.min(buffer.line_count().saturating_sub(1));
+                let start = buffer.rope.line_to_char(first);
+                let end = if last + 1 >= buffer.line_count() {
+                    buffer.rope.len_chars()
+                } else {
+                    buffer.rope.line_to_char(last + 1)
+                };
+                (start, end)
+            }
+            None if self.mode.is_visual() => {
+                let range = self.visual_range();
+                self.leave_visual();
+                (range.start, range.end)
+            }
+            None => {
+                let buffer = self.buffer();
+                let line = buffer.cursor.line;
+                let start = buffer.rope.line_to_char(line);
+                let end = start + crate::core::text::line_len(&buffer.rope, line);
+                (start, end)
+            }
+        };
+
+        let original = self.buffer().slice(start, end);
+        if original.trim().is_empty() {
+            self.set_error("nothing selected to rewrite");
+            return;
+        }
+
+        let request = crate::ai::Request {
+            instruction: instruction.to_string(),
+            buffer_id: self.buffer().id,
+            start,
+            end,
+            original,
+        };
+        let context = self.context_around(start, end);
+        let filetype = self.buffer().syntax_name.clone();
+        let prompt = crate::ai::prompt(&request, &filetype, &context);
+
+        self.conversation
+            .say(crate::ai::Turn::You(instruction.to_string()));
+        self.asking = true;
+        self.set_message(format!("ai: {instruction}…"));
+        let command = self.config.ai.command.clone();
+        let timeout = crate::ai::timeout(&self.config.ai);
+        self.runner.ask(command, prompt, request, timeout);
+    }
+
+    /// Lines around the region, so the provider can see what it is editing
+    /// inside without being asked to rewrite it.
+    fn context_around(&self, start: usize, end: usize) -> String {
+        let span = self.config.ai.context_lines;
+        if span == 0 {
+            return String::new();
+        }
+        let buffer = self.buffer();
+        let first = buffer.rope.char_to_line(start.min(buffer.rope.len_chars()));
+        let last = buffer.rope.char_to_line(end.min(buffer.rope.len_chars()));
+        let from = first.saturating_sub(span);
+        let to = (last + span).min(buffer.line_count().saturating_sub(1));
+        let mut out = String::new();
+        for line in from..=to {
+            if line >= first && line <= last {
+                continue;
+            }
+            out.push_str(
+                &crate::core::text::line(&buffer.rope, line)
+                    .chars()
+                    .collect::<String>(),
+            );
+            out.push('\n');
+        }
+        out
+    }
+
+    fn receive_proposal(&mut self, request: crate::ai::Request, replacement: String) {
+        let replacement = crate::ai::match_line_shape(&request.original, &replacement);
+        let proposal = crate::ai::proposal::Proposal {
+            instruction: request.instruction.clone(),
+            buffer_id: request.buffer_id,
+            start: request.start,
+            end: request.end,
+            original: request.original,
+            replacement,
+            author: self.config.ai.author.clone(),
+        };
+        self.conversation.say(crate::ai::Turn::Assistant(format!(
+            "{} line(s) to change",
+            proposal.changed_lines()
+        )));
+        if proposal.replacement == proposal.original {
+            self.set_message("ai: nothing to change");
+            return;
+        }
+        let changed = proposal.changed_lines();
+        self.proposal = Some(proposal);
+        self.show_proposal();
+        self.set_message(format!(
+            "ai: {changed} line(s) proposed — :apply to keep, :discard to drop"
+        ));
+    }
+
+    /// Show the pending proposal as a diff.
+    pub fn show_proposal(&mut self) {
+        let Some(proposal) = &self.proposal else {
+            self.set_error("no proposal");
+            return;
+        };
+        let mut lines = vec![format!("  {}", proposal.instruction), String::new()];
+        lines.extend(proposal.diff().into_iter().map(|line| format!("  {line}")));
+        lines.push(String::new());
+        lines.push("  :apply to keep it · :discard to drop it".to_string());
+        self.overlay = Some(Overlay {
+            title: "AI proposal".to_string(),
+            lines,
+            scroll: 0,
+        });
+    }
+
+    pub fn apply_proposal(&mut self) {
+        let Some(proposal) = self.proposal.take() else {
+            self.set_error("no proposal to apply");
+            return;
+        };
+        let Some(index) = self
+            .buffers
+            .iter()
+            .position(|buffer| buffer.id == proposal.buffer_id)
+        else {
+            self.set_error("the buffer it was written for has gone");
+            return;
+        };
+        if !proposal.still_applies(&self.buffers[index]) {
+            self.set_error("the text changed since it was proposed; discarded");
+            return;
+        }
+        self.current = index;
+        proposal.apply(&mut self.buffers[index]);
+        self.sync_window();
+        self.dot.changed = true;
+        self.conversation
+            .say(crate::ai::Turn::Note("applied".to_string()));
+        self.set_message(format!("ai: applied ({})", proposal.author));
+    }
+
+    pub fn discard_proposal(&mut self) {
+        if self.proposal.take().is_some() {
+            self.conversation
+                .say(crate::ai::Turn::Note("discarded".to_string()));
+            self.set_message("ai: discarded");
+        } else {
+            self.set_error("no proposal to discard");
+        }
+    }
+
     // -- pickers ------------------------------------------------------------
 
     pub fn close_picker(&mut self) {
@@ -843,6 +1066,14 @@ impl App {
                 )
             })
             .collect();
+        let mut items = items;
+        for command in self.plugins.commands() {
+            items.push(Item::new(
+                command.description.clone(),
+                format!("{}  ·  :{}", command.plugin, command.name),
+                Action::Ex(command.name.clone()),
+            ));
+        }
         self.picker = Some(Picker::with_items("Commands", Source::Commands, items));
     }
 
@@ -1065,6 +1296,10 @@ impl App {
         self.current = index;
         self.detect_syntax(index);
         self.refresh_buffer(index, Trigger::Open);
+        self.announce(crate::plugin::Event::BufferOpened {
+            buffer: self.buffers[index].id,
+            path: self.buffers[index].path.clone(),
+        });
         let name = self.buffer().display_name();
         if is_new {
             self.set_message(format!("\"{name}\" [New]"));

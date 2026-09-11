@@ -127,6 +127,17 @@ pub const TOPICS: &[(&str, &str)] = &[
     (":check", "run the checkers now"),
     (":fmt", "format the buffer with the configured formatter"),
     ("", ""),
+    ("AI AND PLUGINS", ""),
+    (
+        ":ai {what to do}",
+        "rewrite the line, or :'<,'>ai for a selection",
+    ),
+    (":apply :discard", "keep or drop the proposal"),
+    (":proposal", "see the pending diff again"),
+    (":chat", "the transcript panel (also Ctrl-W a)"),
+    (":plugins", "what is loaded, and what it is allowed to do"),
+    (":events", "what the editor has been told lately"),
+    ("", ""),
     ("SHARED SESSIONS", ""),
     (
         ":share",

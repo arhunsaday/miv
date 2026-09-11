@@ -537,7 +537,11 @@ pub fn execute(app: &mut App, input: &str) {
             app.close_window();
         }
         "on" | "only" => app.only_window(),
-        "explorer" | "tree" | "sidebar" => app.toggle_sidebar(),
+        "explorer" | "tree" => app
+            .workspace
+            .sidebar
+            .toggle_view(crate::view::sidebar::View::Explorer),
+        "sidebar" => app.toggle_sidebar(),
         "fmt" | "format" => format_buffer(app),
         "check" => {
             let index = app.current;
@@ -545,8 +549,27 @@ pub fn execute(app: &mut App, input: &str) {
             app.set_message("running checkers…");
         }
         "diag" | "diagnostics" => app.open_diagnostics_picker(),
+        "ai" => {
+            let range = parsed.range;
+            app.ask_ai(range, parsed.args.trim())
+        }
+        "apply" => app.apply_proposal(),
+        "discard" => app.discard_proposal(),
+        "proposal" => app.show_proposal(),
+        "chat" => app
+            .workspace
+            .sidebar
+            .toggle_view(crate::view::sidebar::View::Chat),
+        "plugins" => show_plugins(app),
+        "events" => show_events(app),
         "h" | "help" => show_help(app),
-        other => app.set_error(format!("E492: Not an editor command: {other}")),
+        // A plugin's command is tried before giving up, so contributed
+        // commands are indistinguishable from built-in ones at the prompt.
+        other => {
+            if !crate::plugin::api::run(app, other, &args) {
+                app.set_error(format!("E492: Not an editor command: {other}"));
+            }
+        }
     }
 }
 
@@ -732,6 +755,10 @@ fn write_file(app: &mut App, args: &str, _force: bool) -> bool {
             app.set_message(format!("\"{}\" {lines}L, {bytes}B written", path.display()));
             let index = app.current;
             app.refresh_buffer(index, Trigger::Save);
+            app.announce(crate::plugin::Event::BufferSaved {
+                buffer: app.buffers[index].id,
+                path: path.clone(),
+            });
             true
         }
         Err(e) => {
@@ -1210,6 +1237,87 @@ fn canonical(name: &str) -> &str {
         "gs" => "gitsigns",
         other => other,
     }
+}
+
+fn show_plugins(app: &mut App) {
+    let mut lines = Vec::new();
+    if app.plugins.is_empty() {
+        let location = crate::plugin::default_directory()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<no config directory>".to_string());
+        lines.push("  No plugins loaded.".to_string());
+        lines.push(String::new());
+        lines.push(format!("  Put one in {location}/<name>/plugin.toml"));
+        lines.push("  See :help, or the README section on plugins.".to_string());
+    }
+    for plugin in &app.plugins.loaded {
+        let manifest = &plugin.manifest;
+        let capabilities: Vec<&str> = manifest
+            .capabilities
+            .iter()
+            .map(|capability| capability.label())
+            .collect();
+        lines.push(format!(
+            "  {:<18} {:<8} {}",
+            manifest.name,
+            if manifest.version.is_empty() {
+                "-"
+            } else {
+                &manifest.version
+            },
+            manifest.description
+        ));
+        lines.push(format!(
+            "  {:<18} grants: {}",
+            "",
+            if capabilities.is_empty() {
+                "none".to_string()
+            } else {
+                capabilities.join(", ")
+            }
+        ));
+    }
+    let contributed = app.plugins.commands();
+    if !contributed.is_empty() {
+        lines.push(String::new());
+        lines.push("  COMMANDS".to_string());
+        for command in contributed {
+            lines.push(format!(
+                "  :{:<17} {:<30} ({})",
+                command.name, command.description, command.plugin
+            ));
+        }
+    }
+    if !app.plugins.problems.is_empty() {
+        lines.push(String::new());
+        lines.push("  PROBLEMS".to_string());
+        for problem in &app.plugins.problems {
+            lines.push(format!("  {problem}"));
+        }
+    }
+    app.overlay = Some(Overlay {
+        title: "Plugins".to_string(),
+        lines,
+        scroll: 0,
+    });
+}
+
+fn show_events(app: &mut App) {
+    let recent = app.plugins.recent();
+    let lines: Vec<String> = if recent.is_empty() {
+        vec!["  nothing yet".to_string()]
+    } else {
+        recent
+            .iter()
+            .rev()
+            .map(|event| format!("  {}", event.label()))
+            .collect()
+    };
+    app.overlay = Some(Overlay {
+        title: "Recent events (newest first)".to_string(),
+        lines,
+        scroll: 0,
+    });
 }
 
 fn show_help(app: &mut App) {

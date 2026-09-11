@@ -284,6 +284,7 @@ fn handle_event(app: &mut App, event: SessionEvent) {
             });
             let announce = session.announce;
             app.session = Some(session);
+            app.announce(crate::plugin::Event::ParticipantJoined { name: name.clone() });
             if announce {
                 let via = if is_web { "browser" } else { "terminal" };
                 app.set_message(format!(
